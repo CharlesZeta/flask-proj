@@ -1,1791 +1,1429 @@
-from flask import Flask, request, jsonify, render_template_string, session, send_file
-import time
-from datetime import datetime
-import pytz
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+MT4 量化交易系统后端
+提供命令队列、去重/幂等、数据展示等功能
+"""
+
+from flask import Flask, request, jsonify, render_template_string
+from datetime import datetime, timedelta
+import uuid
+import hashlib
 import json
-import sqlite3
-from contextlib import closing
-import pandas as pd
-import io
+import threading
+import time
+from collections import defaultdict, deque
+from typing import Dict, List, Optional
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key_here'
 
-# 数据库配置
-DATABASE = 'trading_signals.db'
+# ==================== 数据存储（内存） ====================
+# 命令队列：{account: deque([command, ...])}
+command_queues: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
 
-# 交易时段与资金配置
-TRADING_TIME_START = (4, 30)   # 04:30
-TRADING_TIME_END = (23, 59)    # 近似到 24:00
-BASE_CAPITAL = 100000.0        # 账户基准资金（占位，可改为从实盘读取）
+# 命令状态追踪：{cmd_id: command_state}
+command_states: Dict[str, dict] = {}
 
+# 最新状态：{account: status_data}
+latest_status: Dict[str, dict] = {}
 
-def is_trading_time_now():
-    """判断当前是否在交易时间（东八区 4:30 - 24:00）"""
-    tz = pytz.timezone('Asia/Shanghai')
-    now = datetime.now(tz)
+# 执行回报：{account: deque([report, ...])}
+reports: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 
-    start_hour, start_minute = TRADING_TIME_START
-    end_hour, end_minute = TRADING_TIME_END
+# 报价数据：{account: deque([quote, ...])}
+quotes: Dict[str, deque] = defaultdict(lambda: deque(maxlen=50))
 
-    start = now.replace(hour=start_hour, minute=start_minute,
-                        second=0, microsecond=0)
-    end = now.replace(hour=end_hour, minute=end_minute,
-                      second=59, microsecond=999999)
+# 持仓数据：{account: positions_data}
+positions_data: Dict[str, dict] = {}
 
-    return start <= now <= end
+# 去重窗口：{account: {hash: (cmd_id, timestamp)}}
+dedupe_cache: Dict[str, Dict[str, tuple]] = defaultdict(dict)
 
+# 统计指标
+metrics = {
+    'total_commands': 0,
+    'dedupe_hits': 0,
+    'delivered_count': 0,
+    'executed_count': 0,
+    'error_count': 0,
+    'last_error': None,
+    'last_error_time': None,
+}
 
-# 数据库初始化函数
-def init_db():
-    with closing(sqlite3.connect(DATABASE)) as conn:
-        with conn:  # 自动提交事务
-            with closing(conn.cursor()) as cursor:
-                # 创建信号表
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trade_id TEXT NOT NULL,
-                    symbol TEXT NOT NULL DEFAULT '',
-                    direction TEXT NOT NULL,
-                    entry_time REAL NOT NULL,
-                    entry_price REAL NOT NULL,
-                    prediction_minutes INTEGER NOT NULL,
-                    received_at REAL NOT NULL,
-                    processed BOOLEAN DEFAULT FALSE,
-                    raw_data TEXT NOT NULL,
-                    client_ip TEXT NOT NULL DEFAULT ''
-                )
-                ''')
+# 锁
+data_lock = threading.Lock()
 
-                # 创建结果表
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trade_id TEXT NOT NULL,
-                    symbol TEXT NOT NULL DEFAULT '',
-                    direction TEXT NOT NULL,
-                    entry_time REAL NOT NULL,
-                    entry_price REAL NOT NULL,
-                    exit_time REAL NOT NULL,
-                    exit_price REAL NOT NULL,
-                    result TEXT NOT NULL,
-                    prediction_minutes INTEGER NOT NULL,
-                    received_at REAL NOT NULL,
-                    raw_data TEXT NOT NULL
-                )
-                ''')
+# ==================== 工具函数 ====================
 
-                # MT4 指令表（用于缓存网页下发给 MT4 EA 的指令）
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS mt4_commands (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at REAL NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',   -- pending / sent / done
-                    payload TEXT NOT NULL
-                )
-                ''')
-
-                # MT4 报价表（保存各品种最近一次 MT4 回传的价格）
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS mt4_quotes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    bid REAL NOT NULL,
-                    ask REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-                ''')
-
-                # 创建索引提高查询性能
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_signals_trade_id ON signals(trade_id)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_results_trade_id ON results(trade_id)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_mt4_quotes_symbol ON mt4_quotes(symbol)')
-
-
-# 数据库辅助函数
-def get_db():
-    """获取数据库连接"""
-    db = sqlite3.connect(DATABASE)
-    db.row_factory = sqlite3.Row  # 使返回的行像字典一样工作
-    return db
-
-
-def query_db(query, args=(), one=False):
-    """执行查询"""
-    with closing(get_db()) as conn:
-        with closing(conn.cursor()) as cur:
-            cur.execute(query, args)
-            rv = cur.fetchall()
-            return (rv[0] if rv else None) if one else rv
-
-
-def execute_db(query, args=()):
-    """执行写入操作"""
-    with closing(get_db()) as conn:
-        with conn:  # 自动提交事务
-            with closing(conn.cursor()) as cur:
-                cur.execute(query, args)
-                return cur.lastrowid
-
-
-# 初始化数据库
-init_db()
-
-
-# 自定义 datetime 过滤器（东八区）
-@app.template_filter('datetime')
-def format_datetime(value, format="%Y-%m-%d %H:%M:%S"):
-    if value is None:
-        return ""
-    if isinstance(value, (int, float)):
-        tz = pytz.timezone('Asia/Shanghai')
-        return datetime.fromtimestamp(value, tz).strftime(format)
-    elif isinstance(value, str):
-        try:
-            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
-            return dt.strftime(format)
-        except Exception:
-            return value
-    return str(value)
-
-
-# 登录接口
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json(silent=True) or {}
-    username = data.get('username')
-    password = data.get('password')
-    if username == 'CharlesZ' and password == 'MYbt7274':
-        session['logged_in'] = True
-        return jsonify({"status": "success"})
-    else:
-        return jsonify({"status": "error", "message": "Invalid credentials"}), 401
-
-
-# 信号查询接口（实盘系统拉取最新未处理信号）
-@app.route('/api/signal/latest', methods=['GET'])
-def get_latest_signal():
-    signal = query_db(
-        'SELECT * FROM signals WHERE processed = FALSE ORDER BY received_at DESC LIMIT 1',
-        one=True
-    )
-    if signal:
-        return jsonify({'status': 'success', 'signal': dict(signal)})
-    else:
-        return jsonify({'status': 'error', 'message': 'No unprocessed signals'}), 404
-
-
-# 登出接口
-@app.route('/logout', methods=['POST'])
-def logout():
-    session.pop('logged_in', None)
-    return jsonify({"status": "success"})
-
-
-# 交易信号接口（实盘系统推送信号）
-@app.route('/api/signal', methods=['POST'])
-def receive_signal():
-    try:
-        data = request.get_json()
-
-        # 验证必要字段
-        required_fields = ['trade_id', 'direction', 'entry_time', 'entry_price', 'prediction_minutes']
-        if not data or not all(field in data for field in required_fields):
-            return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
-
-        # 插入数据库
-        execute_db(
-            '''
-            INSERT INTO signals
-            (trade_id, direction, entry_time, entry_price, prediction_minutes, received_at, raw_data, client_ip)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                data['trade_id'],
-                data['direction'],
-                data['entry_time'],
-                data['entry_price'],
-                data['prediction_minutes'],
-                time.time(),
-                json.dumps(data, ensure_ascii=False),
-                data.get('client_ip', request.remote_addr or '')
-            )
-        )
-
-        return jsonify({
-            'status': 'success',
-            'trade_id': data['trade_id'],
-            'message': 'Signal received'
-        })
-
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# 结果接收接口（实盘系统推送成交结果）
-@app.route('/api/result', methods=['POST'])
-def receive_result():
-    try:
-        data = request.get_json()
-
-        # 验证必要字段
-        required_fields = ['trade_id', 'direction', 'entry_time', 'entry_price',
-                           'exit_time', 'exit_price', 'result', 'prediction_minutes']
-        if not data or not all(field in data for field in required_fields):
-            return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
-
-        # 插入数据库
-        execute_db(
-            '''
-            INSERT INTO results
-            (trade_id, direction, entry_time, entry_price, exit_time, exit_price,
-             result, prediction_minutes, received_at, raw_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                data['trade_id'],
-                data['direction'],
-                data['entry_time'],
-                data['entry_price'],
-                data['exit_time'],
-                data['exit_price'],
-                data['result'],
-                data['prediction_minutes'],
-                time.time(),
-                json.dumps(data, ensure_ascii=False)
-            )
-        )
-
-        # 更新对应的信号为已处理
-        execute_db(
-            'UPDATE signals SET processed = TRUE WHERE trade_id = ? AND processed = FALSE',
-            (data['trade_id'],)
-        )
-
-        return jsonify({
-            'status': 'success',
-            'trade_id': data['trade_id'],
-            'message': 'Result received'
-        })
-
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# 清空数据接口
-@app.route('/api/clear_data', methods=['POST'])
-def clear_data():
-    try:
-        data = request.get_json(silent=True) or {}
-        admin_key = data.get('admin_key')
-
-        # 检查登录状态或密钥
-        if not session.get('logged_in') and admin_key != 'MYbt7274':
-            return jsonify({"status": "error", "message": "Invalid admin key or not logged in"}), 403
-
-        # 清空两个表
-        execute_db('DELETE FROM signals')
-        execute_db('DELETE FROM results')
-        return jsonify({"status": "success", "message": "All data cleared"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# 网络延迟测试接口
-@app.route('/api/test_latency', methods=['POST'])
-def test_latency():
-    try:
-        data = request.get_json()
-        if data and data.get('test') == 'latency':
-            return jsonify({
-                'status': 'success',
-                'timestamp': data.get('timestamp'),
-                'server_time': time.time()
-            })
-        return jsonify({'status': 'error', 'message': 'Invalid test request'}), 400
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# 检查并删除 30 秒内相邻重复信号/结果
-@app.route('/api/check_duplicates', methods=['POST'])
-def check_duplicate_signals():
-    try:
-        # 检查登录状态
-        if not session.get('logged_in'):
-            return jsonify({"status": "error", "message": "Not logged in"}), 403
-
-        deleted_count = 0
-        deleted_results_count = 0
-
-        # 第一步：检查信号表中的重复信号
-        signals = query_db('SELECT * FROM signals ORDER BY received_at ASC') or []
-
-        # 使用集合记录需要删除的trade_id
-        duplicate_trade_ids = set()
-
-        for i in range(1, len(signals)):
-            prev_signal = signals[i - 1]
-            current_signal = signals[i]
-
-            # 检查时间差是否小于30秒
-            if current_signal['received_at'] - prev_signal['received_at'] < 30:
-                duplicate_trade_ids.add(current_signal['trade_id'])
-                execute_db('DELETE FROM signals WHERE id = ?', (current_signal['id'],))
-                deleted_count += 1
-
-        # 第二步：独立检查结果表中的重复结果
-        results = query_db('SELECT * FROM results ORDER BY received_at ASC') or []
-
-        for i in range(1, len(results)):
-            prev_result = results[i - 1]
-            current_result = results[i]
-
-            # 检查时间差是否小于30秒
-            if current_result['received_at'] - prev_result['received_at'] < 30:
-                # 删除当前结果
-                execute_db('DELETE FROM results WHERE id = ?', (current_result['id'],))
-                deleted_results_count += 1
-                # 同时检查对应的信号是否也需要删除
-                signal = query_db('SELECT * FROM signals WHERE trade_id = ?',
-                                  (current_result['trade_id'],), one=True)
-                if signal:
-                    execute_db('DELETE FROM signals WHERE id = ?', (signal['id'],))
-                    deleted_count += 1
-
-        # 第三步：删除所有标记为重复的trade_id对应的结果
-        for trade_id in duplicate_trade_ids:
-            result = query_db('SELECT * FROM results WHERE trade_id = ?',
-                              (trade_id,), one=True)
-            if result:
-                execute_db('DELETE FROM results WHERE id = ?', (result['id'],))
-                deleted_results_count += 1
-
-        return jsonify({
-            "status": "success",
-            "deleted_count": deleted_count,
-            "deleted_results_count": deleted_results_count,
-            "message": "Duplicate check completed"
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# 导出数据为XLSX接口
-@app.route('/api/export_data', methods=['GET'])
-def export_data():
-    try:
-        # 获取所有数据
-        signals = query_db('SELECT * FROM signals ORDER BY received_at DESC')
-        results = query_db('SELECT * FROM results ORDER BY received_at DESC')
-
-        # 转换为DataFrame
-        signals_df = pd.DataFrame([dict(row) for row in signals])
-        results_df = pd.DataFrame([dict(row) for row in results])
-
-        # 创建Excel writer
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            signals_df.to_excel(writer, sheet_name='Signals', index=False)
-            results_df.to_excel(writer, sheet_name='Results', index=False)
-
-        output.seek(0)
-
-        # 返回文件
-        return send_file(
-            output,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name='trading_data.xlsx'
-        )
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# ===== 新增：JSON 汇总 / 持仓 / 历史 / MT4 指令 接口，预留给前端和实盘系统 =====
-
-@app.route('/api/summary', methods=['GET'])
-def api_summary():
-    """账户与当日汇总数据 JSON 接口（当前逻辑为占位 / 简单示例）"""
-    tz = pytz.timezone('Asia/Shanghai')
-    now = datetime.now(tz)
-
-    today_start = tz.localize(datetime(now.year, now.month, now.day, 0, 0, 0)).timestamp()
-    today_end = tz.localize(datetime(now.year, now.month, now.day, 23, 59, 59)).timestamp()
-
-    # 当日交易总数
-    today_trades_row = query_db(
-        'SELECT COUNT(*) AS count FROM results WHERE exit_time BETWEEN ? AND ?',
-        (today_start, today_end),
-        one=True
-    )
-    today_trades = today_trades_row['count'] if today_trades_row else 0
-
-    # 当日盈利 / 亏损单数（基于 result 字段）
-    today_wins_row = query_db(
-        "SELECT COUNT(*) AS count FROM results WHERE result = '盈利' AND exit_time BETWEEN ? AND ?",
-        (today_start, today_end),
-        one=True
-    )
-    today_wins = today_wins_row['count'] if today_wins_row else 0
-
-    today_losses = today_trades - today_wins if today_trades > 0 else 0
-
-    # 使用原来的“净盈利单数公式”作为占位：盈利 +1，亏损 -1.25
-    today_net_profit = today_wins - today_losses * 1.25
-    today_profit_pct = (today_net_profit / today_trades * 100) if today_trades > 0 else 0.0
-
-    # 当前持仓（未处理信号）数量
-    open_positions_count_row = query_db(
-        'SELECT COUNT(*) AS count FROM signals WHERE processed = FALSE',
-        one=True
-    )
-    open_positions_count = open_positions_count_row['count'] if open_positions_count_row else 0
-
-    # 当前持仓总损益、杠杆百分比：目前用 0 占位，后续可从实盘写入真实值
-    open_pnl = 0.0
-    leverage_pct = 0.0
-
-    return jsonify({
-        'status': 'success',
-        'data': {
-            'equity': BASE_CAPITAL,
-            'today_net_profit': today_net_profit,
-            'today_profit_pct': today_profit_pct,
-            'open_pnl': open_pnl,
-            'leverage_pct': leverage_pct,
-            'today_trades': today_trades,
-            'open_positions_count': open_positions_count,
-            'server_time': time.time()
-        }
-    })
-
-
-@app.route('/api/open_positions', methods=['GET'])
-def api_open_positions():
-    """当前持仓列表：用未处理的 signals 作为“持仓”占位"""
-    positions = query_db(
-        'SELECT * FROM signals WHERE processed = FALSE ORDER BY entry_time DESC'
-    ) or []
-    return jsonify({
-        'status': 'success',
-        'data': [dict(row) for row in positions]
-    })
-
-
-@app.route('/api/history', methods=['GET'])
-def api_history():
-    """历史交易记录列表：基于 results 表"""
-    history = query_db(
-        'SELECT * FROM results ORDER BY exit_time DESC LIMIT 300'
-    ) or []
-    return jsonify({
-        'status': 'success',
-        'data': [dict(row) for row in history]
-    })
-
-
-@app.route('/api/mt4_commands', methods=['GET', 'POST'])
-def api_mt4_commands():
+def get_json_or_400():
     """
-    MT4 指令接口：
-    - POST：前端/其他系统写入一条待执行指令（payload 任意 JSON）
-    - GET：MT4 EA 拉取一条最新待执行指令（status = 'pending'），并立即标记为 sent
+    安全解析 JSON 请求体。
+    - 返回 (data, None) 表示解析成功
+    - 返回 (None, response) 表示解析失败，直接在视图中 return response
     """
-    if request.method == 'POST':
-        data = request.get_json(silent=True) or {}
+    try:
+        # 先读取原始 body，避免 get_json 消费流后拿不到原始内容
+        raw_body = request.get_data(as_text=True) or ""
+        data = request.get_json(silent=True)
         if not data:
-            return jsonify({'status': 'error', 'message': 'Empty payload'}), 400
+            # 解析失败或空 JSON，返回 400，并附带原始 body 方便调试
+            resp = jsonify({
+                "ok": False,
+                "error": "invalid json",
+                "raw": raw_body,
+                "path": request.path,
+                "method": request.method,
+            })
+            resp.headers['Content-Type'] = 'application/json'
+            return None, (resp, 400)
+        return data, None
+    except Exception as e:
+        # 兜底保护，任何异常都返回 400
+        raw_body = request.get_data(as_text=True) or ""
+        resp = jsonify({
+            "ok": False,
+            "error": f"invalid json: {e}",
+            "raw": raw_body,
+            "path": request.path,
+            "method": request.method,
+        })
+        resp.headers['Content-Type'] = 'application/json'
+        return None, (resp, 400)
 
-        payload_text = json.dumps(data, ensure_ascii=False)
-        cmd_id = execute_db(
-            '''
-            INSERT INTO mt4_commands (created_at, status, payload)
-            VALUES (?, ?, ?)
-            ''',
-            (time.time(), 'pending', payload_text)
+
+def generate_nonce() -> str:
+    """生成随机 nonce"""
+    return uuid.uuid4().hex[:8]
+
+def generate_cmd_id() -> str:
+    """生成命令 ID"""
+    return f"cmd_{uuid.uuid4().hex[:12]}"
+
+def compute_dedupe_hash(action: str, account: str, **kwargs) -> str:
+    """计算去重哈希"""
+    # 根据 action 提取关键字段
+    key_parts = [action, account]
+    
+    if action == 'MARKET':
+        key_parts.extend([
+            str(kwargs.get('symbol', '')),
+            str(kwargs.get('side', '')),
+            str(kwargs.get('volume', kwargs.get('risk_alloc_pct', ''))),
+            str(kwargs.get('sl_points', '')),
+            str(kwargs.get('tp_points', '')),
+        ])
+    elif action == 'LIMIT':
+        key_parts.extend([
+            str(kwargs.get('symbol', '')),
+            str(kwargs.get('side', '')),
+            str(kwargs.get('price', '')),
+            str(kwargs.get('volume', '')),
+        ])
+    elif action == 'CLOSE':
+        key_parts.extend([
+            str(kwargs.get('ticket', '')),
+        ])
+    elif action == 'QUOTE':
+        key_parts.extend([
+            ','.join(sorted(kwargs.get('symbols', []))),
+        ])
+    
+    key_str = '|'.join(key_parts)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+def cleanup_expired_commands():
+    """清理过期命令（后台线程）"""
+    while True:
+        try:
+            time.sleep(5)
+            now = time.time()
+            with data_lock:
+                for account, queue in list(command_queues.items()):
+                    # 清理队列中过期命令
+                    expired_indices = []
+                    for i, cmd in enumerate(queue):
+                        if cmd.get('created_at', 0) + cmd.get('ttl_sec', 0) < now:
+                            expired_indices.append(i)
+                            cmd_id = cmd.get('id')
+                            if cmd_id in command_states:
+                                command_states[cmd_id]['state'] = 'EXPIRED'
+                    
+                    # 从后往前删除，避免索引变化
+                    for i in reversed(expired_indices):
+                        queue.remove(queue[i])
+                
+                # 清理去重缓存（超过2秒的）
+                for account in list(dedupe_cache.keys()):
+                    cache = dedupe_cache[account]
+                    expired_keys = [
+                        k for k, (_, ts) in cache.items()
+                        if now - ts > 2.0
+                    ]
+                    for k in expired_keys:
+                        del cache[k]
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+
+# 启动清理线程
+cleanup_thread = threading.Thread(target=cleanup_expired_commands, daemon=True)
+cleanup_thread.start()
+
+# ==================== 工具函数：日志记录 ====================
+
+def log_request(route_name):
+    """记录请求信息"""
+    try:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        remote_addr = request.remote_addr or 'unknown'
+        method = request.method
+        path = request.path
+        headers = dict(request.headers)
+        
+        # 获取请求体（前500字节）
+        try:
+            body_data = request.get_data(as_text=True)
+            if body_data:
+                body_preview = body_data[:500]
+            else:
+                body_preview = "(empty)"
+        except:
+            body_preview = "(无法读取)"
+        
+        print(f"[{timestamp}] [{route_name}] {method} {path}")
+        print(f"  Remote: {remote_addr}")
+        print(f"  Headers: {headers}")
+        print(f"  Body (first 500 bytes): {body_preview}")
+    except Exception as log_err:
+        print(f"[LOG ERROR] Failed to log request: {log_err}")
+
+def safe_json_response(ok, data=None, error=None, trace=None, status_code=200):
+    """安全创建 JSON 响应"""
+    try:
+        response_data = {'ok': ok}
+        if data:
+            response_data.update(data)
+        if error:
+            response_data['error'] = error
+        if trace:
+            response_data['trace'] = trace
+        
+        response = jsonify(response_data)
+        response.headers['Content-Type'] = 'application/json'
+        return response, status_code
+    except Exception as e:
+        # 如果连 JSON 响应都无法创建，返回最简单的响应
+        print(f"[CRITICAL] Cannot create JSON response: {e}")
+        from flask import Response
+        return Response(
+            '{"ok":false,"error":"Internal error"}',
+            status=200,
+            mimetype='application/json'
         )
-        return jsonify({'status': 'success', 'command_id': cmd_id})
 
-    # GET: MT4 EA 拉取一条待执行指令
-    row = query_db(
-        "SELECT * FROM mt4_commands WHERE status = 'pending' ORDER BY id ASC LIMIT 1",
-        one=True
+# ==================== 全局错误处理 ====================
+
+@app.errorhandler(404)
+def not_found(error):
+    """404错误返回JSON"""
+    return safe_json_response(False, error='Not found', status_code=404)
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    """405错误返回JSON"""
+    return safe_json_response(False, error='Method not allowed', status_code=405)
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """捕获所有未处理的异常，返回JSON（状态码200避免MT4异常）"""
+    import traceback
+    error_msg = str(e)
+    error_type = e.__class__.__name__
+    traceback_str = traceback.format_exc()
+    
+    # 打印完整 traceback 到控制台
+    print(f"[GLOBAL ERROR HANDLER] {error_type}: {error_msg}")
+    print(traceback_str)
+    
+    # 返回 JSON 错误结构，状态码 200（避免 MT4 逻辑异常）
+    return safe_json_response(
+        ok=False,
+        error=error_msg,
+        trace=error_type
     )
-    if not row:
-        return jsonify({'status': 'empty'})
 
-    # 标记为 sent，避免被重复拉取
-    execute_db(
-        "UPDATE mt4_commands SET status = 'sent' WHERE id = ?",
-        (row['id'],)
-    )
+# ==================== MT4 API 接口（仅JSON，路径：/web/api/mt4/...）===================
 
-    return jsonify({
-        'status': 'success',
-        'command_id': row['id'],
-        'payload': json.loads(row['payload'])
-    })
+@app.route('/web/api/mt4/commands', methods=['GET', 'POST'])
+def get_commands():
+    """MT4 轮询拉取命令 - 支持GET和POST"""
+    log_request('get_commands')
+    try:
+        # 优先从POST JSON获取，其次从GET参数获取
+        account = ''
+        max_count = 50
+        data = {}
+        raw_data = ''  # 初始化 raw_data
+        
+        try:
+            if request.method == 'POST':
+                # 检查 Content-Type
+                content_type = request.headers.get('Content-Type', '')
+                print(f"[MT4 Commands] Content-Type: {content_type}")
+                
+                # 获取原始数据用于调试
+                raw_data = request.get_data(as_text=True)
+                print(f"[MT4 Commands] Raw POST data (first 500 chars): {raw_data[:500]}")
+                
+                # 尝试解析 JSON
+                try:
+                    data = request.get_json(force=True, silent=False) or {}
+                    print(f"[MT4 Commands] Parsed JSON: {data}")
+                except Exception as json_err:
+                    print(f"[MT4 Commands] JSON parse error: {json_err}")
+                    # 如果 JSON 解析失败，尝试从原始数据中提取
+                    data = {}
+                    # 尝试从 GET 参数获取
+                    account = request.args.get('account', '')
+                
+                account = data.get('account', '') or request.args.get('account', '')
+                # 安全转换 max_count
+                try:
+                    max_val = data.get('max') or request.args.get('max', 50)
+                    max_count = int(max_val) if max_val else 50
+                except (ValueError, TypeError):
+                    max_count = 50
+            else:
+                account = request.args.get('account', '')
+                try:
+                    max_count = int(request.args.get('max', 50))
+                except (ValueError, TypeError):
+                    max_count = 50
+        except Exception as parse_err:
+            import traceback
+            print(f"[MT4 Commands] Parse error: {parse_err}")
+            print(traceback.format_exc())
+            account = request.args.get('account', '')
+            max_count = 50
+        
+        # 调试日志
+        print(f"[MT4 Commands] Method: {request.method}, Account: '{account}', Max: {max_count}")
+        print(f"[MT4 Commands] GET args: {dict(request.args)}")
+        print(f"[MT4 Commands] POST data keys: {list(data.keys()) if data else 'N/A'}")
+        
+        if not account:
+            # 更详细的错误信息
+            error_details = {
+                'method': request.method,
+                'content_type': request.headers.get('Content-Type', 'N/A'),
+                'post_data_keys': list(data.keys()) if data else [],
+                'get_args': dict(request.args),
+                'raw_post_data_preview': raw_data[:200] if request.method == 'POST' and raw_data else 'N/A'
+            }
+            error_msg = f"account required. Details: {error_details}"
+            print(f"[MT4 Commands] ERROR: {error_msg}")
+            
+            # 提供更友好的错误响应
+            response_data = {
+                'error': 'account required',
+                'message': '缺少必需的 account 参数。请通过以下方式之一提供：',
+                'solutions': [
+                    'POST 请求：在 JSON 体中包含 {"account": "账户号", "max": 50}',
+                    'GET 请求：在 URL 参数中包含 ?account=账户号&max=50',
+                    '例如：/web/api/mt4/commands?account=833711'
+                ],
+                'debug': error_details
+            }
+            response = jsonify(response_data)
+            response.headers['Content-Type'] = 'application/json'
+            return response, 400
+        
+        try:
+            with data_lock:
+                queue = command_queues.get(account, deque())
+                commands = []
+                delivered_ids = []
+                
+                # 批量取走命令
+                max_to_take = min(max_count, len(queue))
+                for _ in range(max_to_take):
+                    if queue:
+                        try:
+                            cmd = queue.popleft()
+                            cmd_id = cmd.get('id', '')
+                            
+                            if not cmd_id:
+                                continue
+                            
+                            # 创建命令副本，确保JSON可序列化
+                            clean_cmd = {}
+                            try:
+                                for key, value in cmd.items():
+                                    # 跳过None值，转换数据类型
+                                    if value is None:
+                                        continue
+                                    elif isinstance(value, float):
+                                        # 对于浮点数，如果是整数部分，转换为int
+                                        if key in ['created_at', 'ttl_sec']:
+                                            try:
+                                                clean_cmd[key] = int(value)
+                                            except (ValueError, OverflowError):
+                                                clean_cmd[key] = 0
+                                        else:
+                                            # 检查是否为 NaN 或 Inf
+                                            if not (value != value or value == float('inf') or value == float('-inf')):
+                                                clean_cmd[key] = value
+                                    elif isinstance(value, (str, int, bool)):
+                                        clean_cmd[key] = value
+                                    elif isinstance(value, (list, dict)):
+                                        # 递归清理嵌套结构
+                                        try:
+                                            json.dumps(value)  # 测试是否可序列化
+                                            clean_cmd[key] = value
+                                        except (TypeError, ValueError):
+                                            clean_cmd[key] = str(value)
+                                    else:
+                                        # 其他类型转换为字符串
+                                        clean_cmd[key] = str(value)
+                            except Exception as clean_err:
+                                print(f"[MT4 Commands] Clean cmd error: {clean_err}")
+                                # 如果清理失败，至少保留基本字段
+                                clean_cmd = {
+                                    'id': cmd_id,
+                                    'action': cmd.get('action', 'UNKNOWN'),
+                                    'account': cmd.get('account', account),
+                                }
+                            
+                            commands.append(clean_cmd)
+                            delivered_ids.append(cmd_id)
+                            
+                            # 更新状态为 DELIVERED
+                            try:
+                                if cmd_id in command_states:
+                                    command_states[cmd_id]['state'] = 'DELIVERED'
+                                    command_states[cmd_id]['delivered_at'] = time.time()
+                                else:
+                                    command_states[cmd_id] = {
+                                        'state': 'DELIVERED',
+                                        'delivered_at': time.time(),
+                                        'created_at': clean_cmd.get('created_at', time.time()),
+                                        'action': clean_cmd.get('action', 'UNKNOWN'),
+                                        'symbol': clean_cmd.get('symbol', ''),
+                                    }
+                            except Exception as state_err:
+                                print(f"[MT4 Commands] State update error: {state_err}")
+                        except Exception as cmd_err:
+                            print(f"[MT4 Commands] Process cmd error: {cmd_err}")
+                            continue
+                
+                metrics['delivered_count'] += len(commands)
+                queue_len = len(queue)
+        except Exception as lock_err:
+            print(f"[MT4 Commands] Lock error: {lock_err}")
+            import traceback
+            print(traceback.format_exc())
+            commands = []
+            queue_len = 0
+        
+        # 确保响应数据可序列化
+        try:
+            response_data = {
+                'commands': commands,
+                'server_ts': int(time.time()),
+                'queue_len': queue_len,
+            }
+            # 测试序列化
+            json.dumps(response_data)
+        except Exception as json_err:
+            print(f"[MT4 Commands] JSON serialization error: {json_err}")
+            # 如果序列化失败，返回空命令列表
+            response_data = {
+                'commands': [],
+                'server_ts': int(time.time()),
+                'queue_len': 0,
+                'error': 'Serialization error',
+            }
+        
+        response = jsonify(response_data)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Commands] Fatal error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(
+            ok=False,
+            data={
+                'commands': [],
+                'server_ts': int(time.time()),
+                'queue_len': 0,
+            },
+            error=error_msg,
+            trace=error_type
+        )
 
+@app.route('/web/api/mt4/status', methods=['POST'])
+def post_status():
+    """MT4 上报状态"""
+    log_request('post_status')
+    try:
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
+        
+        account = data.get('account', '')
+        
+        if not account:
+            return safe_json_response(ok=False, error='account required', status_code=400)
+        
+        with data_lock:
+            if account not in latest_status:
+                latest_status[account] = {}
+            latest_status[account].update({
+                **data,
+                'updated_at': time.time(),
+            })
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Status] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
-@app.route('/api/mt4_quote', methods=['GET', 'POST'])
-def api_mt4_quote():
-    """
-    MT4 报价接口：
-    - POST：MT4 EA 回传某品种当前报价 {symbol, bid, ask}
-    - GET：前端查询指定 symbol 最近一次报价 /api/mt4_quote?symbol=XAUUSD
-    """
-    if request.method == 'POST':
-        data = request.get_json(silent=True) or {}
-        symbol = (data.get('symbol') or '').upper()
-        bid = data.get('bid')
-        ask = data.get('ask')
-        if not symbol or bid is None or ask is None:
-            return jsonify({'status': 'error', 'message': 'symbol, bid, ask required'}), 400
+@app.route('/web/api/mt4/report', methods=['POST'])
+def post_report():
+    """MT4 上报执行结果"""
+    log_request('post_report')
+    try:
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
+        
+        account = data.get('account', '')
+        cmd_id = data.get('cmd_id', '')
+        nonce = data.get('nonce', '')
+        
+        if not account or not cmd_id:
+            return safe_json_response(ok=False, error='account and cmd_id required', status_code=400)
+        
+        with data_lock:
+            # 校验 cmd_id 和 nonce
+            if cmd_id in command_states:
+                state = command_states[cmd_id]
+                
+                # 获取原始命令的 nonce 进行校验
+                original_nonce = ''
+                if 'command' in state and 'nonce' in state['command']:
+                    original_nonce = state['command']['nonce']
+                
+                # 校验 nonce（如果提供了）
+                nonce_valid = True
+                if nonce and original_nonce and nonce != original_nonce:
+                    nonce_valid = False
+                    state['state'] = 'INVALID_NONCE'
+                    metrics['error_count'] += 1
+                    metrics['last_error'] = f'Nonce mismatch for cmd_id: {cmd_id}'
+                    metrics['last_error_time'] = time.time()
+                else:
+                    state['state'] = 'REPORTED'
+                
+                state['report'] = data
+                state['reported_at'] = time.time()
+                
+                # 计算延迟
+                if 'delivered_at' in state:
+                    state['latency_est_ms'] = (state['reported_at'] - state['delivered_at']) * 1000
+                
+                ok = data.get('ok', False)
+                if ok and nonce_valid:
+                    metrics['executed_count'] += 1
+                elif not nonce_valid:
+                    # nonce 不匹配已在上面处理
+                    pass
+                else:
+                    metrics['error_count'] += 1
+                    metrics['last_error'] = data.get('error', 'unknown')
+                    metrics['last_error_time'] = time.time()
+            else:
+                # 未知命令 ID
+                state = {
+                    'state': 'INVALID_REPORT',
+                    'report': data,
+                    'reported_at': time.time(),
+                }
+                command_states[cmd_id] = state
+                metrics['error_count'] += 1
+                metrics['last_error'] = f'Unknown cmd_id: {cmd_id}'
+                metrics['last_error_time'] = time.time()
+            
+            # 保存到回报列表（使用 .get() 安全访问）
+            if account not in reports:
+                reports[account] = deque(maxlen=100)
+            reports[account].append({
+                **data,
+                'timestamp': time.time(),
+            })
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Report] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
-        # 简单 upsert：先尝试更新，没有则插入
-        existing = query_db('SELECT id FROM mt4_quotes WHERE symbol = ?', (symbol,), one=True)
-        now_ts = time.time()
-        if existing:
-            execute_db(
-                'UPDATE mt4_quotes SET bid = ?, ask = ?, updated_at = ? WHERE id = ?',
-                (bid, ask, now_ts, existing['id'])
+@app.route('/web/api/mt4/quote', methods=['POST'])
+def post_quote():
+    """MT4 上报报价"""
+    log_request('post_quote')
+    try:
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
+        
+        account = data.get('account', '')
+        
+        if not account:
+            return safe_json_response(ok=False, error='account required', status_code=400)
+        
+        with data_lock:
+            if account not in quotes:
+                quotes[account] = deque(maxlen=50)
+            quotes[account].append({
+                **data,
+                'timestamp': time.time(),
+            })
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Quote] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+@app.route('/web/api/mt4/positions', methods=['POST'])
+def post_positions():
+    """MT4 上报持仓"""
+    log_request('post_positions')
+    try:
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
+        
+        account = data.get('account', '')
+        
+        if not account:
+            return safe_json_response(ok=False, error='account required', status_code=400)
+        
+        with data_lock:
+            positions_data[account] = {
+                **data,
+                'updated_at': time.time(),
+            }
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Positions] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+# ==================== 前端 Web API 接口（仅JSON，路径：/web/api/...）===================
+
+@app.route('/web/api/command', methods=['POST'])
+def create_command():
+    """创建命令（网页端调用）"""
+    log_request('create_command')
+    try:
+        # 检查Content-Type
+        if not request.is_json:
+            return safe_json_response(ok=False, error='Content-Type must be application/json')
+        
+        data = request.get_json(silent=True)
+        if not data:
+            return safe_json_response(ok=False, error='invalid json')
+        
+        account = data.get('account', '')
+        action = data.get('action', '')
+        
+        if not account or not action:
+            return safe_json_response(ok=False, error='account and action required')
+        
+        # 生成命令 ID 和 nonce
+        cmd_id = generate_cmd_id()
+        nonce = generate_nonce()
+        
+        # 去重检查（排除 account 和 action，因为它们已经作为位置参数传递）
+        dedupe_data = {k: v for k, v in data.items() if k not in ['account', 'action']}
+        dedupe_hash = compute_dedupe_hash(action, account, **dedupe_data)
+        deduped = False
+        
+        with data_lock:
+            # 检查去重窗口（使用 .get() 安全访问）
+            if account not in dedupe_cache:
+                dedupe_cache[account] = {}
+            cache = dedupe_cache[account]
+            
+            if dedupe_hash in cache:
+                existing_cmd_id, _ = cache[dedupe_hash]
+                # 如果命令还在队列中，返回已存在的 cmd_id
+                if existing_cmd_id in command_states:
+                    state = command_states[existing_cmd_id]
+                    if state.get('state') in ['QUEUED', 'DELIVERED']:
+                        deduped = True
+                        cmd_id = existing_cmd_id
+                        # 从原始命令获取 nonce
+                        if 'command' in state and 'nonce' in state['command']:
+                            nonce = state['command']['nonce']
+                        else:
+                            # 如果找不到，从队列中查找（使用 .get() 安全访问）
+                            queue = command_queues.get(account, deque())
+                            for cmd in queue:
+                                if cmd.get('id') == existing_cmd_id:
+                                    nonce = cmd.get('nonce', '')
+                                    break
+            
+            if not deduped:
+                # 创建新命令
+                command = {
+                    'id': cmd_id,
+                    'nonce': nonce,
+                    'action': action,
+                    'account': account,
+                    'created_at': time.time(),
+                    'ttl_sec': data.get('ttl_sec', 10),
+                    **{k: v for k, v in data.items() if k not in ['account', 'action', 'ttl_sec']}
+                }
+                
+                # 入队（使用 .get() 安全访问）
+                if account not in command_queues:
+                    command_queues[account] = deque(maxlen=1000)
+                command_queues[account].append(command)
+                
+                # 记录状态
+                command_states[cmd_id] = {
+                    'state': 'QUEUED',
+                    'created_at': command['created_at'],
+                    'action': action,
+                    'symbol': data.get('symbol', ''),
+                    'command': command,
+                }
+                
+                # 更新去重缓存
+                cache[dedupe_hash] = (cmd_id, time.time())
+                
+                metrics['total_commands'] += 1
+            else:
+                metrics['dedupe_hits'] += 1
+        
+        return safe_json_response(ok=True, data={
+            'id': cmd_id,
+            'nonce': nonce,
+            'deduped': deduped,
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Create Command] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+@app.route('/web/api/data', methods=['GET'])
+def get_data():
+    """获取数据（供前端拉取）"""
+    log_request('get_data')
+    try:
+        account = request.args.get('account', '')
+        
+        with data_lock:
+            # 获取命令状态列表（最近100条）
+            recent_states = sorted(
+                command_states.items(),
+                key=lambda x: x[1].get('created_at', 0),
+                reverse=True
+            )[:100]
+            
+            commands_list = []
+            for cmd_id, state in recent_states:
+                cmd_data = {
+                    'cmd_id': cmd_id,
+                    'state': state.get('state', 'UNKNOWN'),
+                    'action': state.get('action', ''),
+                    'symbol': state.get('symbol', ''),
+                    'created_at': state.get('created_at', 0),
+                    'delivered_at': state.get('delivered_at', 0),
+                    'reported_at': state.get('reported_at', 0),
+                    'latency_est_ms': state.get('latency_est_ms', 0),
+                }
+                if 'report' in state:
+                    report = state['report']
+                    cmd_data['ok'] = report.get('ok', False)
+                    cmd_data['message'] = report.get('message', '')
+                    cmd_data['ticket'] = report.get('ticket', '')
+                    cmd_data['error'] = report.get('error', '')
+                commands_list.append(cmd_data)
+            
+            # 获取账户状态（使用 .get() 安全访问）
+            status = latest_status.get(account, {})
+            
+            # 获取回报列表（使用 .get() 安全访问）
+            reports_list = list(reports.get(account, deque()))[-20:]
+            
+            # 获取报价列表（使用 .get() 安全访问）
+            quotes_list = list(quotes.get(account, deque()))[-10:]
+            
+            # 获取持仓（使用 .get() 安全访问）
+            positions = positions_data.get(account, {}).get('positions', [])
+            
+            # 计算统计（使用 .get() 安全访问）
+            queue_len = len(command_queues.get(account, deque()))
+            
+            # 最近1分钟的命令统计
+            now = time.time()
+            recent_commands = [
+                s for s in recent_states
+                if s[1].get('created_at', 0) > now - 60
+            ]
+            recent_success = sum(
+                1 for _, s in recent_commands
+                if s.get('report', {}).get('ok', False)
             )
-        else:
-            execute_db(
-                'INSERT INTO mt4_quotes (symbol, bid, ask, updated_at) VALUES (?, ?, ?, ?)',
-                (symbol, bid, ask, now_ts)
-            )
-        return jsonify({'status': 'success'})
+            recent_total = len(recent_commands)
+            success_rate = (recent_success / recent_total * 100) if recent_total > 0 else 0
+            
+            # 平均延迟
+            latencies = [
+                s[1].get('latency_est_ms', 0)
+                for _, s in recent_states
+                if s[1].get('latency_est_ms', 0) > 0
+            ]
+            avg_latency = sum(latencies) / len(latencies) if latencies else 0
+        
+        return safe_json_response(ok=True, data={
+            'status': status,
+            'commands': commands_list,
+            'reports': reports_list,
+            'quotes': quotes_list,
+            'positions': positions,
+            'metrics': {
+                'queue_len': queue_len,
+                'total_commands': metrics['total_commands'],
+                'dedupe_hits': metrics['dedupe_hits'],
+                'delivered_count': metrics['delivered_count'],
+                'executed_count': metrics['executed_count'],
+                'error_count': metrics['error_count'],
+                'last_error': metrics['last_error'],
+                'last_error_time': metrics['last_error_time'],
+                'recent_commands_1min': recent_total,
+                'success_rate_1min': round(success_rate, 2),
+                'avg_latency_ms': round(avg_latency, 2),
+            },
+            'server_ts': time.time(),
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Get Data] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
-    # GET 查询
-    symbol = (request.args.get('symbol') or '').upper()
-    if not symbol:
-        return jsonify({'status': 'error', 'message': 'symbol required'}), 400
+# ==================== 健康检查和调试接口 ====================
 
-    row = query_db(
-        'SELECT symbol, bid, ask, updated_at FROM mt4_quotes WHERE symbol = ? ORDER BY updated_at DESC LIMIT 1',
-        (symbol,),
-        one=True
-    )
-    if not row:
-        return jsonify({'status': 'empty'})
+@app.route('/web/api/health', methods=['GET'])
+def health_check():
+    """健康检查接口"""
+    try:
+        instance_id = str(uuid.uuid4())[:8]
+        return safe_json_response(ok=True, data={
+            'server_time': datetime.now().isoformat(),
+            'instance_id': instance_id,
+            'timestamp': time.time(),
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Health Check] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
-    return jsonify({
-        'status': 'success',
-        'data': {
-            'symbol': row['symbol'],
-            'bid': row['bid'],
-            'ask': row['ask'],
-            'updated_at': row['updated_at']
+@app.route('/web/api/debug/queues', methods=['GET'])
+def debug_queues():
+    """调试接口：查看队列状态"""
+    log_request('debug_queues')
+    try:
+        with data_lock:
+            # 所有账户队列长度
+            queue_info = {}
+            for account, queue in command_queues.items():
+                queue_info[account] = {
+                    'queue_len': len(queue),
+                    'queue_items': [cmd.get('id', 'unknown') for cmd in list(queue)[:10]]  # 最近10条
+                }
+            
+            # 最近命令列表（最近20条）
+            recent_commands = []
+            sorted_states = sorted(
+                command_states.items(),
+                key=lambda x: x[1].get('created_at', 0),
+                reverse=True
+            )[:20]
+            for cmd_id, state in sorted_states:
+                recent_commands.append({
+                    'cmd_id': cmd_id,
+                    'state': state.get('state', 'UNKNOWN'),
+                    'action': state.get('action', ''),
+                    'created_at': state.get('created_at', 0),
+                })
+            
+            # 最近 report 列表（最近20条）
+            recent_reports = []
+            for account, report_queue in reports.items():
+                for report in list(report_queue)[-10:]:  # 每个账户最近10条
+                    recent_reports.append({
+                        'account': account,
+                        'cmd_id': report.get('cmd_id', ''),
+                        'ok': report.get('ok', False),
+                        'timestamp': report.get('timestamp', 0),
+                    })
+            recent_reports = sorted(recent_reports, key=lambda x: x.get('timestamp', 0), reverse=True)[:20]
+        
+        return safe_json_response(ok=True, data={
+            'queues': queue_info,
+            'recent_commands': recent_commands,
+            'recent_reports': recent_reports,
+            'total_accounts': len(command_queues),
+            'total_command_states': len(command_states),
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Debug Queues] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+
+@app.route('/web/api/echo', methods=['GET', 'POST'])
+def echo():
+    """
+    调试接口：原样回显 MT4 / 其他客户端发送的内容
+    用于确认：
+    - 实际 HTTP 方法
+    - 实际 Header
+    - 实际原始 body（包括 data_size 是否为 0）
+    """
+    try:
+        # 为了完全符合你的调试需求，这里不做任何 JSON 解析，只是原样返回
+        raw_body = request.get_data()  # bytes
+        # 为了方便在浏览器 / 日志里看，再给一份 UTF-8 文本版本
+        try:
+            raw_text = raw_body.decode('utf-8', errors='replace')
+        except Exception:
+            raw_text = ""
+        
+        # 打印完整调试信息到控制台
+        print("=== /web/api/echo 调试请求 ===")
+        print(f"Path   : {request.path}")
+        print(f"Method : {request.method}")
+        print(f"Headers: {dict(request.headers)}")
+        print(f"Body   : {raw_text[:500]}")
+        print("=== /web/api/echo 结束 ===")
+        
+        resp = jsonify({
+            "ok": True,
+            "method": request.method,
+            "path": request.path,
+            "headers": dict(request.headers),
+            "body_bytes_len": len(raw_body),
+            "body_preview": raw_text[:500],
+        })
+        resp.headers['Content-Type'] = 'application/json'
+        return resp
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Echo] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+# ==================== 可视化页面 ====================
+
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>MT4 量化交易系统 - 可视化追踪</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            padding: 20px;
         }
-    })
-
-
-# ===== 新版前端监控面板（含 5 个选项卡 + 交易时段黑屏机制） =====
-
-@app.route('/')
-def dashboard():
-    tz = pytz.timezone('Asia/Shanghai')
-    now = datetime.now(tz)
-
-    # 是否在交易时间
-    trading_time_flag = is_trading_time_now()
-
-    # 今日时间范围
-    today_start = tz.localize(datetime(now.year, now.month, now.day, 0, 0, 0)).timestamp()
-    today_end = tz.localize(datetime(now.year, now.month, now.day, 23, 59, 59)).timestamp()
-
-    # 当日交易统计（用于顶部“今日净收益 / 百分比”等）
-    today_trades_row = query_db(
-        'SELECT COUNT(*) AS count FROM results WHERE exit_time BETWEEN ? AND ?',
-        (today_start, today_end),
-        one=True
-    )
-    today_trades = today_trades_row['count'] if today_trades_row else 0
-
-    today_wins_row = query_db(
-        "SELECT COUNT(*) AS count FROM results WHERE result = '盈利' AND exit_time BETWEEN ? AND ?",
-        (today_start, today_end),
-        one=True
-    )
-    today_wins = today_wins_row['count'] if today_wins_row else 0
-
-    today_losses = today_trades - today_wins if today_trades > 0 else 0
-
-    today_net_profit = today_wins - today_losses * 1.25  # 占位：净盈利单数
-    today_profit_pct = (today_net_profit / today_trades * 100) if today_trades > 0 else 0.0
-
-    # 当前“持仓”（未处理信号）
-    open_positions = query_db(
-        'SELECT * FROM signals WHERE processed = FALSE ORDER BY entry_time DESC LIMIT 200'
-    )
-
-    # 历史交易（已完成）
-    history_trades = query_db(
-        'SELECT * FROM results ORDER BY exit_time DESC LIMIT 200'
-    )
-
-    # 账号汇总（占位逻辑）
-    summary = {
-        'equity': BASE_CAPITAL,
-        'today_net_profit': today_net_profit,
-        'today_profit_pct': today_profit_pct,
-        'open_pnl': 0.0,         # 占位：当前持仓总损益，后续可从实盘计算
-        'leverage_pct': 0.0      # 占位：杠杆百分比
-    }
-
-    current_time_str = now.strftime('%Y-%m-%d %H:%M:%S')
-
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>交易数据监控面板</title>
-        <style>
-            * {
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-            }
-            body {
-                font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans","PingFang SC","Microsoft YaHei",sans-serif;
-                background: #0f172a;
-                color: #e5e7eb;
-                padding: 24px;
-                transition: background-color 0.4s ease, color 0.4s ease;
-            }
-            /* 非交易时段：背景黑 + 字体黑，实现“整体隐藏”效果 */
-            body.after-hours {
-                background: #000000;
-                color: #000000;
-            }
-            body.after-hours * {
-                color: #000000 !important;
-                border-color: #000000 !important;
-                box-shadow: none !important;
-            }
-            .container {
-                max-width: 1320px;
-                margin: 0 auto;
-            }
-            .header {
-                margin-bottom: 20px;
-            }
-            .header-title {
-                display: flex;
-                justify-content: space-between;
-                align-items: baseline;
-            }
-            .header-title h1 {
-                font-size: 24px;
-                font-weight: 600;
-                letter-spacing: 0.05em;
-            }
-            .header-sub {
-                margin-top: 8px;
-                font-size: 14px;
-                color: #9ca3af;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }
-            .header-time {
-                font-variant-numeric: tabular-nums;
-            }
-            .summary-grid {
-                display: grid;
-                grid-template-columns: repeat(5, minmax(0, 1fr));
-                gap: 16px;
-                margin-top: 16px;
-            }
-            .summary-card {
-                background: radial-gradient(circle at top left, #1d4ed8 0, #020617 55%);
-                border-radius: 14px;
-                padding: 14px 16px;
-                box-shadow: 0 18px 40px rgba(15,23,42,0.8);
-                border: 1px solid rgba(148,163,184,0.25);
-                position: relative;
-                overflow: hidden;
-            }
-            .summary-card:nth-child(2) {
-                background: radial-gradient(circle at top left, #059669 0, #020617 55%);
-            }
-            .summary-card:nth-child(3) {
-                background: radial-gradient(circle at top left, #a855f7 0, #020617 55%);
-            }
-            .summary-card:nth-child(4) {
-                background: radial-gradient(circle at top left, #f97316 0, #020617 55%);
-            }
-            .summary-card:nth-child(5) {
-                background: radial-gradient(circle at top left, #e11d48 0, #020617 55%);
-            }
-            .summary-label {
-                font-size: 12px;
-                color: #9ca3af;
-                margin-bottom: 6px;
-            }
-            .summary-value {
-                font-size: 20px;
-                font-weight: 600;
-                margin-bottom: 4px;
-                font-variant-numeric: tabular-nums;
-            }
-            .summary-sub {
-                font-size: 12px;
-                color: #9ca3af;
-            }
-            .summary-positive {
-                color: #4ade80;
-            }
-            .summary-negative {
-                color: #f97373;
-            }
-            .tab-bar {
-                margin-top: 24px;
-                display: flex;
-                justify-content: space-between;
-                align-items: flex-end;
-            }
-            .tabs {
-                display: flex;
-                gap: 8px;
-            }
-            .tab {
-                padding: 8px 16px;
-                border-radius: 999px;
-                border: 1px solid transparent;
-                background: transparent;
-                color: #9ca3af;
-                font-size: 14px;
-                cursor: pointer;
-                transition: all 0.2s ease;
-            }
-            .tab:hover {
-                background: rgba(148,163,184,0.08);
-            }
-            .tab.active {
-                background: #e5e7eb;
-                color: #020617;
-                border-color: transparent;
-                box-shadow: 0 8px 24px rgba(15,23,42,0.55);
-            }
-            .tab-underline {
-                height: 1px;
-                background: linear-gradient(to right, transparent, rgba(156,163,175,0.4), transparent);
-                margin-top: 8px;
-            }
-            .content {
-                margin-top: 20px;
-                background: rgba(15,23,42,0.9);
-                border-radius: 18px;
-                padding: 18px 20px;
-                border: 1px solid rgba(55,65,81,0.7);
-                box-shadow: 0 24px 60px rgba(15,23,42,0.9);
-                min-height: 420px;
-            }
-            .tab-content {
-                display: none;
-                height: 100%;
-            }
-            .tab-content.active {
-                display: block;
-            }
-
-            /* 做多 / 做空 + 仓位设置 */
-            .order-layout {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 20px;
-            }
-            .order-card {
-                background: radial-gradient(circle at top left, rgba(37,99,235,0.16) 0, rgba(15,23,42,1) 55%);
-                border-radius: 16px;
-                padding: 18px;
-                border: 1px solid rgba(55,65,81,0.9);
-            }
-            .order-card.short {
-                background: radial-gradient(circle at top left, rgba(239,68,68,0.18) 0, rgba(15,23,42,1) 55%);
-            }
-            .order-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 12px;
-            }
-            .order-title {
-                font-size: 18px;
-                font-weight: 600;
-            }
-            .badge {
-                font-size: 11px;
-                padding: 2px 8px;
-                border-radius: 999px;
-                border: 1px solid rgba(148,163,184,0.5);
-                color: #9ca3af;
-            }
-            .quote-status {
-                font-size: 11px;
-                padding: 2px 8px;
-                border-radius: 999px;
-                border: 1px solid rgba(248,113,113,0.8);
-                color: #fecaca;
-                margin-left: 8px;
-            }
-            .quote-status.ready {
-                border-color: rgba(34,197,94,0.9);
-                color: #bbf7d0;
-            }
-            .position-control {
-                margin-top: 8px;
-                padding-top: 10px;
-                border-top: 1px dashed rgba(55,65,81,0.8);
-            }
-            .position-row {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                margin-bottom: 10px;
-            }
-            .position-label {
-                font-size: 13px;
-                color: #9ca3af;
-                width: 70px;
-            }
-            .position-input {
-                flex: 1;
-                display: flex;
-                gap: 8px;
-                align-items: center;
-            }
-            .position-input input[type="number"] {
-                width: 90px;
-                padding: 6px 8px;
-                border-radius: 8px;
-                border: 1px solid rgba(55,65,81,0.9);
-                background: rgba(15,23,42,0.9);
-                color: #e5e7eb;
-                font-size: 13px;
-            }
-            .position-input input[type="range"] {
-                flex: 1;
-            }
-            .small-input {
-                width: 120px;
-            }
-            .order-actions {
-                display: flex;
-                justify-content: flex-end;
-                gap: 10px;
-                margin-top: 12px;
-            }
-            .btn {
-                padding: 8px 14px;
-                border-radius: 999px;
-                border: 1px solid transparent;
-                font-size: 13px;
-                cursor: pointer;
-                transition: all 0.2s ease;
-            }
-            .btn-outline {
-                background: transparent;
-                border-color: rgba(156,163,175,0.6);
-                color: #e5e7eb;
-            }
-            .btn-outline:hover {
-                background: rgba(148,163,184,0.08);
-            }
-            .btn-primary {
-                background: linear-gradient(to right, #22c55e, #22d3ee);
-                color: #020617;
-                box-shadow: 0 8px 24px rgba(34,197,94,0.55);
-            }
-            .btn-primary.short {
-                background: linear-gradient(to right, #fb7185, #f97316);
-                box-shadow: 0 8px 24px rgba(239,68,68,0.55);
-            }
-            .btn-primary:hover {
-                filter: brightness(1.03);
-            }
-
-            /* 仓位设置 Tab */
-            .position-settings {
-                max-width: 520px;
-            }
-            .field {
-                margin-bottom: 14px;
-            }
-            .field label {
-                display: block;
-                font-size: 13px;
-                margin-bottom: 4px;
-                color: #9ca3af;
-            }
-            .field input, .field select {
-                width: 100%;
-                padding: 8px 10px;
-                border-radius: 10px;
-                border: 1px solid rgba(55,65,81,0.9);
-                background: rgba(15,23,42,0.9);
-                color: #e5e7eb;
-                font-size: 13px;
-            }
-            .field-hint {
-                font-size: 12px;
-                margin-top: 3px;
-                color: #6b7280;
-            }
-
-            /* 列表公用样式（当前持仓 / 历史交易） */
-            .list-container {
-                height: 100%;
-                display: flex;
-                flex-direction: column;
-            }
-            .list-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 8px;
-            }
-            .list-header-title {
-                font-size: 16px;
-                font-weight: 500;
-            }
-            .list-header-meta {
-                font-size: 12px;
-                color: #9ca3af;
-            }
-            .table-wrapper {
-                margin-top: 6px;
-                border-radius: 12px;
-                overflow: hidden;
-                border: 1px solid rgba(55,65,81,0.8);
-                background: radial-gradient(circle at top left, rgba(15,23,42,1) 0, rgba(3,7,18,1) 100%);
-                flex: 1;
-                display: flex;
-                flex-direction: column;
-            }
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 13px;
-            }
-            thead {
-                background: rgba(15,23,42,0.95);
-            }
-            th, td {
-                padding: 8px 10px;
-                text-align: left;
-                border-bottom: 1px solid rgba(31,41,55,0.9);
-                vertical-align: middle;
-            }
-            th {
-                font-weight: 500;
-                color: #9ca3af;
-                position: sticky;
-                top: 0;
-                backdrop-filter: blur(10px);
-                z-index: 2;
-            }
-            .scroll-body {
-                overflow-y: auto;
-                max-height: 320px;
-            }
-            tr.data-row {
-                cursor: pointer;
-                transition: background-color 0.12s ease;
-            }
-            tr.data-row:hover {
-                background: rgba(31,41,55,0.9);
-            }
-            .pill {
-                padding: 2px 8px;
-                border-radius: 999px;
-                font-size: 11px;
-                display: inline-block;
-            }
-            .pill-long {
-                background: rgba(22,163,74,0.14);
-                color: #4ade80;
-            }
-            .pill-short {
-                background: rgba(248,113,113,0.16);
-                color: #fb7185;
-            }
-            .pill-win {
-                background: rgba(34,197,94,0.16);
-                color: #4ade80;
-            }
-            .pill-loss {
-                background: rgba(248,113,113,0.16);
-                color: #fecaca;
-            }
-            .detail-row {
-                background: rgba(15,23,42,0.96);
-            }
-            .detail-cell {
-                padding: 10px 16px 12px;
-                border-top: 1px solid rgba(31,41,55,0.8);
-            }
-            .detail-grid {
-                display: grid;
-                grid-template-columns: repeat(4, minmax(0, 1fr));
-                gap: 8px 16px;
-                font-size: 12px;
-                color: #9ca3af;
-            }
-            .detail-item-label {
-                color: #6b7280;
-                margin-right: 4px;
-            }
-            .detail-raw {
-                margin-top: 8px;
-                padding-top: 6px;
-                border-top: 1px dashed rgba(55,65,81,0.7);
-                font-family: SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
-                font-size: 11px;
-                color: #6b7280;
-                word-break: break-all;
-            }
-
-            @media (max-width: 960px) {
-                .summary-grid {
-                    grid-template-columns: repeat(2, minmax(0, 1fr));
-                }
-                .order-layout {
-                    grid-template-columns: 1fr;
-                }
-                .detail-grid {
-                    grid-template-columns: repeat(2, minmax(0, 1fr));
-                }
-            }
-            @media (max-width: 640px) {
-                .summary-grid {
-                    grid-template-columns: 1fr;
-                }
-                .detail-grid {
-                    grid-template-columns: 1fr;
-                }
-                .tab-bar {
-                    flex-direction: column;
-                    align-items: flex-start;
-                    gap: 8px;
-                }
-            }
-        </style>
-    </head>
-    <body class="{{ '' if trading_time_flag else 'after-hours' }}">
-        <div class="container">
-            <div class="header">
-                <div class="header-title">
-                    <h1>交易数据监控面板</h1>
-                </div>
-                <div class="header-sub">
-                    <div>实盘信号中介 · Web 控制台</div>
-                    <div class="header-time" id="headerTime">{{ current_time }}</div>
-                </div>
-                <div class="summary-grid">
-                    <div class="summary-card">
-                        <div class="summary-label">当前资金总额度</div>
-                        <div class="summary-value">¥ {{ '%.2f'|format(summary.equity) }}</div>
-                        <div class="summary-sub">基于配置 BASE_CAPITAL</div>
-                    </div>
-                    <div class="summary-card">
-                        <div class="summary-label">今日净收益</div>
-                        <div class="summary-value {{ 'summary-positive' if summary.today_net_profit >= 0 else 'summary-negative' }}">
-                            {{ '%.2f'|format(summary.today_net_profit) }}
-                        </div>
-                        <div class="summary-sub">单位为“净盈利单数”占位逻辑</div>
-                    </div>
-                    <div class="summary-card">
-                        <div class="summary-label">今日收益百分比</div>
-                        <div class="summary-value {{ 'summary-positive' if summary.today_profit_pct >= 0 else 'summary-negative' }}">
-                            {{ '%.2f'|format(summary.today_profit_pct) }}%
-                        </div>
-                        <div class="summary-sub">基于当日交易胜负结果估算</div>
-                    </div>
-                    <div class="summary-card">
-                        <div class="summary-label">当前持仓总损益</div>
-                        <div class="summary-value">0.00</div>
-                        <div class="summary-sub">预留：后续接入实盘实时 PnL</div>
-                    </div>
-                    <div class="summary-card">
-                        <div class="summary-label">杠杆使用率</div>
-                        <div class="summary-value">0.00%</div>
-                        <div class="summary-sub">预留：后续接入账户杠杆信息</div>
-                    </div>
-                </div>
+        .container { max-width: 1600px; margin: 0 auto; }
+        h1 { color: #4CAF50; margin-bottom: 20px; }
+        h2 { color: #2196F3; margin: 20px 0 10px; font-size: 18px; }
+        .panel {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-item {
+            background: #333;
+            padding: 12px;
+            border-radius: 6px;
+            border-left: 4px solid #4CAF50;
+        }
+        .stat-label { font-size: 12px; color: #aaa; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #4CAF50; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #444;
+        }
+        th {
+            background: #333;
+            color: #4CAF50;
+            position: sticky;
+            top: 0;
+        }
+        tr:hover { background: #333; }
+        .state-QUEUED { color: #FFC107; }
+        .state-DELIVERED { color: #2196F3; }
+        .state-EXECUTED { color: #4CAF50; }
+        .state-REPORTED { color: #4CAF50; }
+        .state-EXPIRED { color: #f44336; }
+        .state-INVALID_REPORT { color: #f44336; background: #3a1a1a; }
+        .ok-true { color: #4CAF50; }
+        .ok-false { color: #f44336; }
+        .command-form {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        input, select, button {
+            padding: 8px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            background: #333;
+            color: #e0e0e0;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #45a049; }
+        .error { color: #f44336; }
+        .success { color: #4CAF50; }
+        .auto-refresh { margin: 10px 0; }
+        .auto-refresh label { margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 MT4 量化交易系统 - 可视化追踪面板</h1>
+        
+        <div class="panel">
+            <div class="auto-refresh">
+                <label>
+                    <input type="checkbox" id="autoRefresh" checked>
+                    自动刷新 (1秒)
+                </label>
+                <label>
+                    账户: <input type="text" id="accountInput" value="833711" style="width: 100px;">
+                </label>
+                <button onclick="loadData()">手动刷新</button>
             </div>
-
-            <div class="tab-bar">
-                <div class="tabs">
-                    <button class="tab active" data-tab="long">做多</button>
-                    <button class="tab" data-tab="short">做空</button>
-                    <button class="tab" data-tab="settings">仓位设置</button>
-                    <button class="tab" data-tab="open">当前持仓</button>
-                    <button class="tab" data-tab="history">历史交易记录</button>
-                </div>
+        </div>
+        
+        <div class="panel">
+            <h2>📊 统计面板</h2>
+            <div class="stats-grid" id="statsGrid"></div>
+        </div>
+        
+        <div class="panel">
+            <h2>💰 账户状态</h2>
+            <div id="accountStatus"></div>
+        </div>
+        
+        <div class="panel">
+            <h2>📝 命令下发表单</h2>
+            <div class="command-form">
+                <select id="actionSelect">
+                    <option value="MARKET">MARKET - 市价单</option>
+                    <option value="LIMIT">LIMIT - 限价单</option>
+                    <option value="CLOSE">CLOSE - 平仓</option>
+                    <option value="QUOTE">QUOTE - 询价</option>
+                </select>
+                <input type="text" id="symbolInput" placeholder="Symbol (EURUSD)" value="EURUSD">
+                <input type="text" id="sideInput" placeholder="Side (BUY/SELL)" value="BUY">
+                <input type="number" id="volumeInput" placeholder="Volume (0.01)" step="0.01" value="0.01">
+                <input type="number" id="riskPctInput" placeholder="Risk % (0.02)" step="0.01" value="0.02">
+                <input type="number" id="slPointsInput" placeholder="SL Points (200)" value="200">
+                <input type="number" id="tpPointsInput" placeholder="TP Points (300)" value="300">
+                <input type="number" id="maxSpreadInput" placeholder="Max Spread (15)" value="15">
+                <input type="number" id="ticketInput" placeholder="Ticket (for CLOSE)" value="">
+                <button onclick="sendCommand()">发送命令</button>
             </div>
-            <div class="tab-underline"></div>
-
-            <div class="content">
-                <!-- 选项1/2：做多 / 做空（中间内嵌仓位与限价、点差、止盈止损设置） -->
-                <div class="tab-content active" id="tab-long">
-                    <div class="order-layout">
-                        <div class="order-card">
-                            <div class="order-header">
-                                <div class="order-title">做多开仓</div>
-                                <div>
-                                    <span class="badge">信号来源：实盘系统 / API</span>
-                                    <span id="longQuoteStatus" class="quote-status">未确认报价</span>
-                                </div>
-                            </div>
-                            <div class="position-control">
-                                <div class="position-row">
-                                    <div class="position-label">交易品种</div>
-                                    <div class="position-input">
-                                        <input id="longSymbol" type="text" class="small-input" value="{{ open_positions[0]['symbol'] if open_positions else 'XAUUSD' }}"
-                                               onkeyup="if(event.key==='Enter'){requestQuote('long');}">
-                                        <button class="btn btn-outline" style="padding:4px 10px;font-size:11px;"
-                                                type="button" onclick="requestQuote('long')">
-                                            报价
-                                        </button>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">订单类型</div>
-                                    <div class="position-input">
-                                        <select id="longOrderType" class="small-input" onchange="onOrderTypeChange('long')">
-                                            <option value="MARKET">市价</option>
-                                            <option value="LIMIT">限价</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">委托价格</div>
-                                    <div class="position-input">
-                                        <input id="longLimitPrice" type="number" step="0.01" class="small-input" placeholder="仅限价单生效" disabled>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">允许点差</div>
-                                    <div class="position-input">
-                                        <input id="longMaxSlippage" type="number" min="0" step="0.1" class="small-input" value="2.0">
-                                        <span style="font-size:12px;color:#6b7280;">点</span>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">仓位比例</div>
-                                    <div class="position-input">
-                                        <input id="longPositionPct" type="range" min="0" max="100" value="20" step="1"
-                                               oninput="syncSlider('long')">
-                                        <input id="longPositionInput" type="number" min="0" max="100" value="20"
-                                               oninput="syncInput('long')">
-                                        <span style="font-size:12px;color:#6b7280;">%</span>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">预估名义</div>
-                                    <div class="position-input">
-                                        <span id="longNotional" style="font-size:13px;color:#e5e7eb;">—</span>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">止盈价</div>
-                                    <div class="position-input">
-                                        <input id="longTp" type="number" step="0.01" class="small-input" placeholder="可选">
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">止损价</div>
-                                    <div class="position-input">
-                                        <input id="longSl" type="number" step="0.01" class="small-input" placeholder="可选">
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="order-actions">
-                                <button class="btn btn-outline" onclick="previewOrder('long')">模拟预览</button>
-                                <button class="btn btn-primary" onclick="submitOrder('long')">发送做多指令</button>
-                            </div>
-                        </div>
-                        <div class="order-card short">
-                            <div class="order-header">
-                                <div class="order-title">做空开仓</div>
-                                <div>
-                                    <span class="badge">信号来源：实盘系统 / API</span>
-                                    <span id="shortQuoteStatus" class="quote-status">未确认报价</span>
-                                </div>
-                            </div>
-                            <div class="position-control">
-                                <div class="position-row">
-                                    <div class="position-label">交易品种</div>
-                                    <div class="position-input">
-                                        <input id="shortSymbol" type="text" class="small-input" value="{{ open_positions[0]['symbol'] if open_positions else 'XAUUSD' }}"
-                                               onkeyup="if(event.key==='Enter'){requestQuote('short');}">
-                                        <button class="btn btn-outline" style="padding:4px 10px;font-size:11px;"
-                                                type="button" onclick="requestQuote('short')">
-                                            报价
-                                        </button>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">订单类型</div>
-                                    <div class="position-input">
-                                        <select id="shortOrderType" class="small-input" onchange="onOrderTypeChange('short')">
-                                            <option value="MARKET">市价</option>
-                                            <option value="LIMIT">限价</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">委托价格</div>
-                                    <div class="position-input">
-                                        <input id="shortLimitPrice" type="number" step="0.01" class="small-input" placeholder="仅限价单生效" disabled>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">允许点差</div>
-                                    <div class="position-input">
-                                        <input id="shortMaxSlippage" type="number" min="0" step="0.1" class="small-input" value="2.0">
-                                        <span style="font-size:12px;color:#e5e7eb;">点</span>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">仓位比例</div>
-                                    <div class="position-input">
-                                        <input id="shortPositionPct" type="range" min="0" max="100" value="20" step="1"
-                                               oninput="syncSlider('short')">
-                                        <input id="shortPositionInput" type="number" min="0" max="100" value="20"
-                                               oninput="syncInput('short')">
-                                        <span style="font-size:12px;color:#e5e7eb;">%</span>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">预估名义</div>
-                                    <div class="position-input">
-                                        <span id="shortNotional" style="font-size:13px;color:#e5e7eb;">—</span>
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">止盈价</div>
-                                    <div class="position-input">
-                                        <input id="shortTp" type="number" step="0.01" class="small-input" placeholder="可选">
-                                    </div>
-                                </div>
-                                <div class="position-row">
-                                    <div class="position-label">止损价</div>
-                                    <div class="position-input">
-                                        <input id="shortSl" type="number" step="0.01" class="small-input" placeholder="可选">
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="order-actions">
-                                <button class="btn btn-outline" onclick="previewOrder('short')">模拟预览</button>
-                                <button class="btn btn-primary short" onclick="submitOrder('short')">发送做空指令</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 选项2 Tab：说明（做空主面板已与做多并排展示） -->
-                <div class="tab-content" id="tab-short">
-                    <p style="font-size:13px;color:#9ca3af;">做空指令面板与“做多”共享一套仓位逻辑，已在左侧 Tab 中并排展示。此处可按需扩展独立策略配置。</p>
-                </div>
-
-                <!-- 选项3：仓位设置 -->
-                <div class="tab-content" id="tab-settings">
-                    <div class="position-settings">
-                        <div class="list-header">
-                            <div class="list-header-title">仓位与风险参数</div>
-                            <div class="list-header-meta">仅前端配置占位，预留 JSON 读写接口</div>
-                        </div>
-
-                        <div class="field">
-                            <label>基础资金规模 (¥)</label>
-                            <input id="baseCapitalInput" type="number" min="0" value="{{ '%.2f'|format(summary.equity) }}">
-                            <div class="field-hint">占位字段：保存后可用于计算预估名义 / 风险敞口。</div>
-                        </div>
-
-                        <div class="field">
-                            <label>单笔最大风险比例 (%)</label>
-                            <input id="maxRiskInput" type="number" min="0" max="100" value="1.0">
-                            <div class="field-hint">例如 1%，表示单笔最大亏损不超过总资金的 1%。</div>
-                        </div>
-
-                        <div class="field">
-                            <label>默认杠杆倍数</label>
-                            <input id="defaultLeverageInput" type="number" min="1" value="1">
-                            <div class="field-hint">此处仅为前端展示与记录，真实杠杆由实盘系统控制。</div>
-                        </div>
-
-                        <div class="field">
-                            <label>通知与风控行为</label>
-                            <select>
-                                <option>仅记录，不自动平仓</option>
-                                <option>触及风险阈值时提醒</option>
-                                <option>触及风险阈值时建议减仓</option>
-                            </select>
-                        </div>
-
-                        <button class="btn btn-primary" onclick="saveSettings()">保存配置（占位）</button>
-                    </div>
-                </div>
-
-                <!-- 选项4：当前持仓 -->
-                <div class="tab-content" id="tab-open">
-                    <div class="list-container">
-                        <div class="list-header">
-                            <div class="list-header-title">当前持仓列表</div>
-                            <div class="list-header-meta">
-                                来源：未处理信号（signals.processed = FALSE）
-                                &nbsp;|&nbsp;
-                                <a href="javascript:void(0)" style="color:#38bdf8;text-decoration:none;" onclick="lockAllPositions()">
-                                    一键锁定全部（MT4 端要求已设置止盈止损才会锁仓）
-                                </a>
-                            </div>
-                        </div>
-                        <div class="table-wrapper">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>持仓ID</th>
-                                        <th>方向</th>
-                                        <th>入场时间</th>
-                                        <th>入场价</th>
-                                        <th>预测(分)</th>
-                                        <th>来源IP</th>
-                                        <th>操作</th>
-                                    </tr>
-                                </thead>
-                            </table>
-                            <div class="scroll-body">
-                                <table>
-                                    <tbody>
-                                    {% for pos in open_positions %}
-                                        <tr class="data-row" onclick="toggleDetail('open', {{ loop.index0 }})">
-                                            <td>{{ pos['trade_id'] }}</td>
-                                            <td>
-                                                <span class="pill {{ 'pill-long' if pos['direction'] == '做多' else 'pill-short' }}">
-                                                    {{ pos['direction'] }}
-                                                </span>
-                                            </td>
-                                            <td>{{ pos['entry_time']|datetime }}</td>
-                                            <td>{{ '%.2f'|format(pos['entry_price']) }}</td>
-                                            <td>{{ pos['prediction_minutes'] }}</td>
-                                            <td>{{ pos['client_ip'] }}</td>
-                                            <td>
-                                                <button class="btn btn-outline" style="padding:4px 10px;font-size:11px;"
-                                                        onclick="event.stopPropagation();lockOnePosition('{{ pos['trade_id'] }}')">
-                                                    锁仓
-                                                </button>
-                                            </td>
-                                        </tr>
-                                        <tr id="open-detail-{{ loop.index0 }}" class="detail-row" style="display:none;">
-                                            <td colspan="6" class="detail-cell">
-                                                <div class="detail-grid">
-                                                    <div><span class="detail-item-label">Trade ID:</span>{{ pos['trade_id'] }}</div>
-                                                    <div><span class="detail-item-label">Symbol:</span>{{ pos['symbol'] }}</div>
-                                                    <div><span class="detail-item-label">方向:</span>{{ pos['direction'] }}</div>
-                                                    <div><span class="detail-item-label">预测时长:</span>{{ pos['prediction_minutes'] }} 分钟</div>
-                                                    <div><span class="detail-item-label">入场时间戳:</span>{{ pos['entry_time'] }}</div>
-                                                    <div><span class="detail-item-label">接收时间戳:</span>{{ pos['received_at'] }}</div>
-                                                    <div><span class="detail-item-label">处理状态:</span>{{ '未处理' if not pos['processed'] else '已处理' }}</div>
-                                                    <div><span class="detail-item-label">客户端 IP:</span>{{ pos['client_ip'] }}</div>
-                                                </div>
-                                                <div class="detail-raw">
-                                                    原始数据(raw_data): {{ pos['raw_data'] }}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    {% else %}
-                                        <tr><td colspan="6" style="padding:16px 12px;color:#6b7280;">暂无未平仓持仓</td></tr>
-                                    {% endfor %}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 选项5：历史交易记录 -->
-                <div class="tab-content" id="tab-history">
-                    <div class="list-container">
-                        <div class="list-header">
-                            <div class="list-header-title">历史交易记录</div>
-                            <div class="list-header-meta">来源：results 表（最近 200 条）</div>
-                        </div>
-                        <div class="table-wrapper">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>交易ID</th>
-                                        <th>方向</th>
-                                        <th>结果</th>
-                                        <th>入场价</th>
-                                        <th>出场价</th>
-                                        <th>预测(分)</th>
-                                    </tr>
-                                </thead>
-                            </table>
-                            <div class="scroll-body">
-                                <table>
-                                    <tbody>
-                                    {% for res in history_trades %}
-                                        <tr class="data-row" onclick="toggleDetail('history', {{ loop.index0 }})">
-                                            <td>{{ res['trade_id'] }}</td>
-                                            <td>
-                                                <span class="pill {{ 'pill-long' if res['direction'] == '做多' else 'pill-short' }}">
-                                                    {{ res['direction'] }}
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <span class="pill {{ 'pill-win' if res['result'] == '盈利' else 'pill-loss' }}">
-                                                    {{ res['result'] }}
-                                                </span>
-                                            </td>
-                                            <td>{{ '%.2f'|format(res['entry_price']) }}</td>
-                                            <td>{{ '%.2f'|format(res['exit_price']) }}</td>
-                                            <td>{{ res['prediction_minutes'] }}</td>
-                                        </tr>
-                                        <tr id="history-detail-{{ loop.index0 }}" class="detail-row" style="display:none;">
-                                            <td colspan="6" class="detail-cell">
-                                                <div class="detail-grid">
-                                                    <div><span class="detail-item-label">Trade ID:</span>{{ res['trade_id'] }}</div>
-                                                    <div><span class="detail-item-label">Symbol:</span>{{ res['symbol'] }}</div>
-                                                    <div><span class="detail-item-label">方向:</span>{{ res['direction'] }}</div>
-                                                    <div><span class="detail-item-label">结果:</span>{{ res['result'] }}</div>
-                                                    <div><span class="detail-item-label">入场时间戳:</span>{{ res['entry_time'] }}</div>
-                                                    <div><span class="detail-item-label">出场时间戳:</span>{{ res['exit_time'] }}</div>
-                                                    <div><span class="detail-item-label">预测时长:</span>{{ res['prediction_minutes'] }} 分钟</div>
-                                                    <div><span class="detail-item-label">接收时间戳:</span>{{ res['received_at'] }}</div>
-                                                </div>
-                                                <div class="detail-raw">
-                                                    原始数据(raw_data): {{ res['raw_data'] }}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    {% else %}
-                                        <tr><td colspan="6" style="padding:16px 12px;color:#6b7280;">暂无历史记录</td></tr>
-                                    {% endfor %}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-            </div> <!-- /content -->
-        </div> <!-- /container -->
-
-        <script>
-            // Tab 切换
-            const tabs = document.querySelectorAll('.tab');
-            const tabContents = document.querySelectorAll('.tab-content');
-
-            tabs.forEach(tab => {
-                tab.addEventListener('click', () => {
-                    const target = tab.dataset.tab;
-                    tabs.forEach(t => t.classList.remove('active'));
-                    tabContents.forEach(c => c.classList.remove('active'));
-
-                    tab.classList.add('active');
-                    const el = document.getElementById('tab-' + target);
-                    if (el) el.classList.add('active');
-                });
-            });
-
-            // 展开 / 收起明细
-            function toggleDetail(type, idx) {
-                const id = type + '-detail-' + idx;
-                const row = document.getElementById(id);
-                if (!row) return;
-                row.style.display = row.style.display === 'none' || row.style.display === '' ? 'table-row' : 'none';
-            }
-
-            // 顶部时间本地刷新
-            function startClock() {
-                const el = document.getElementById('headerTime');
-                if (!el) return;
-                setInterval(() => {
-                    const now = new Date();
-                    const y = now.getFullYear();
-                    const m = String(now.getMonth() + 1).padStart(2, '0');
-                    const d = String(now.getDate()).padStart(2, '0');
-                    const hh = String(now.getHours()).padStart(2, '0');
-                    const mm = String(now.getMinutes()).padStart(2, '0');
-                    const ss = String(now.getSeconds()).padStart(2, '0');
-                    el.textContent = `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
-                }, 1000);
-            }
-
-            // 仓位滑块联动 & 预估名义（基于 BASE_CAPITAL 占位）
-            const BASE_CAPITAL_JS = {{ '%.2f'|format(summary.equity) }};
-
-            function syncSlider(side) {
-                const slider = document.getElementById(side + 'PositionPct');
-                const input = document.getElementById(side + 'PositionInput');
-                const value = Number(slider.value);
-                input.value = value;
-                updateNotional(side, value);
-            }
-
-            function syncInput(side) {
-                const slider = document.getElementById(side + 'PositionPct');
-                const input = document.getElementById(side + 'PositionInput');
-                let value = Number(input.value);
-                if (isNaN(value)) value = 0;
-                value = Math.min(100, Math.max(0, value));
-                input.value = value;
-                slider.value = value;
-                updateNotional(side, value);
-            }
-
-            function updateNotional(side, pct) {
-                const notionalEl = document.getElementById(side + 'Notional');
-                if (!notionalEl) return;
-                const notional = BASE_CAPITAL_JS * pct / 100;
-                notionalEl.textContent = '≈ ¥ ' + notional.toFixed(2);
-            }
-
-            function onOrderTypeChange(side) {
-                const typeEl = document.getElementById(side + 'OrderType');
-                const priceEl = document.getElementById(side + 'LimitPrice');
-                if (!typeEl || !priceEl) return;
-                if (typeEl.value === 'LIMIT') {
-                    priceEl.disabled = false;
+            <div id="commandResult"></div>
+        </div>
+        
+        <div class="panel">
+            <h2>🔄 命令生命周期追踪表</h2>
+            <div style="overflow-x: auto; max-height: 500px;">
+                <table id="commandsTable">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>cmd_id</th>
+                            <th>nonce</th>
+                            <th>action</th>
+                            <th>symbol</th>
+                            <th>state</th>
+                            <th>ok</th>
+                            <th>message</th>
+                            <th>ticket</th>
+                            <th>latency_ms</th>
+                        </tr>
+                    </thead>
+                    <tbody id="commandsBody"></tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h2>📈 持仓表格</h2>
+            <div style="overflow-x: auto;">
+                <table id="positionsTable">
+                    <thead>
+                        <tr>
+                            <th>Ticket</th>
+                            <th>Symbol</th>
+                            <th>Type</th>
+                            <th>Lots</th>
+                            <th>Open Price</th>
+                            <th>SL</th>
+                            <th>TP</th>
+                            <th>Profit</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positionsBody"></tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h2>💹 报价表格</h2>
+            <div style="overflow-x: auto;">
+                <table id="quotesTable">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Bid</th>
+                            <th>Ask</th>
+                            <th>Spread</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="quotesBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let autoRefreshInterval = null;
+        
+        function getAccount() {
+            return document.getElementById('accountInput').value || '833711';
+        }
+        
+        function formatTime(ts) {
+            if (!ts) return '-';
+            return new Date(ts * 1000).toLocaleTimeString();
+        }
+        
+        function formatDateTime(ts) {
+            if (!ts) return '-';
+            return new Date(ts * 1000).toLocaleString();
+        }
+        
+        async function loadData() {
+            const account = getAccount();
+            try {
+                const res = await fetch(`/web/api/data?account=${account}`);
+                
+                // 检查响应内容类型
+                const contentType = res.headers.get('content-type');
+                let data;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    data = await res.json();
                 } else {
-                    priceEl.disabled = true;
-                    priceEl.value = '';
+                    // 如果不是JSON，读取文本内容
+                    const text = await res.text();
+                    console.error('非JSON响应:', text.substring(0, 200));
+                    throw new Error(`服务器返回非JSON响应 (HTTP ${res.status}): ${text.substring(0, 100)}`);
                 }
-            }
-
-            function collectOrderParams(side) {
-                const symbolEl   = document.getElementById(side + 'Symbol');
-                const typeEl     = document.getElementById(side + 'OrderType');
-                const limitEl    = document.getElementById(side + 'LimitPrice');
-                const slipEl     = document.getElementById(side + 'MaxSlippage');
-                const pctEl      = document.getElementById(side + 'PositionInput');
-                const tpEl       = document.getElementById(side + 'Tp');
-                const slEl       = document.getElementById(side + 'Sl');
-
-                const symbol   = symbolEl ? symbolEl.value.trim() : '';
-                const orderType = typeEl ? typeEl.value : 'MARKET';
-                const limitPrice = limitEl && limitEl.value !== '' ? Number(limitEl.value) : 0;
-                const maxSlip    = slipEl && slipEl.value !== '' ? Number(slipEl.value) : 0;
-                const pct        = pctEl && pctEl.value !== '' ? Number(pctEl.value) : 0;
-                const tp         = tpEl && tpEl.value !== '' ? Number(tpEl.value) : 0;
-                const sl         = slEl && slEl.value !== '' ? Number(slEl.value) : 0;
-
-                return {
-                    symbol: symbol || 'XAUUSD',
-                    side: side === 'long' ? 'BUY' : 'SELL',
-                    order_type: orderType,
-                    limit_price: limitPrice,
-                    max_slippage: maxSlip,
-                    position_pct: pct,
-                    tp: tp,
-                    sl: sl
-                };
-            }
-
-            function previewOrder(side) {
-                const p = collectOrderParams(side);
-                console.log('预览下单参数:', p);
-                alert('预览 ' + (p.side === 'BUY' ? '做多' : '做空') +
-                      '\\n品种: ' + p.symbol +
-                      '\\n订单类型: ' + (p.order_type === 'MARKET' ? '市价' : '限价') +
-                      (p.order_type === 'LIMIT' ? '\\n委托价: ' + p.limit_price : '') +
-                      '\\n仓位比例: ' + p.position_pct + '%' +
-                      '\\n允许点差: ' + p.max_slippage + ' 点' +
-                      '\\n止盈: ' + (p.tp || '未设置') +
-                      '\\n止损: ' + (p.sl || '未设置'));
-            }
-
-            function submitOrder(side) {
-                const p = collectOrderParams(side);
-                if (p.position_pct <= 0) {
-                    alert('请先设置仓位比例');
-                    return;
+                
+                // 更新统计面板
+                const stats = data.metrics;
+                document.getElementById('statsGrid').innerHTML = `
+                    <div class="stat-item">
+                        <div class="stat-label">队列长度</div>
+                        <div class="stat-value">${stats.queue_len}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">总命令数</div>
+                        <div class="stat-value">${stats.total_commands}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">去重命中</div>
+                        <div class="stat-value">${stats.dedupe_hits}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">成功率 (1分钟)</div>
+                        <div class="stat-value">${stats.success_rate_1min}%</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">平均延迟</div>
+                        <div class="stat-value">${stats.avg_latency_ms}ms</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">错误数</div>
+                        <div class="stat-value">${stats.error_count}</div>
+                    </div>
+                `;
+                
+                // 更新账户状态
+                const status = data.status;
+                document.getElementById('accountStatus').innerHTML = status.account ? `
+                    <table>
+                        <tr><td>账户</td><td>${status.account}</td></tr>
+                        <tr><td>余额</td><td>${status.balance || '-'}</td></tr>
+                        <tr><td>净值</td><td>${status.equity || '-'}</td></tr>
+                        <tr><td>保证金</td><td>${status.margin || '-'}</td></tr>
+                        <tr><td>保证金水平</td><td>${status.margin_level || '-'}%</td></tr>
+                        <tr><td>当日PnL</td><td>${status.daily_pnl || '-'}</td></tr>
+                        <tr><td>当日收益率</td><td>${status.daily_return ? (status.daily_return * 100).toFixed(2) + '%' : '-'}</td></tr>
+                        <tr><td>杠杆使用</td><td>${status.leverage_used || '-'}</td></tr>
+                    </table>
+                ` : '<p>暂无账户状态数据</p>';
+                
+                // 更新命令表格
+                const tbody = document.getElementById('commandsBody');
+                tbody.innerHTML = data.commands.map(cmd => `
+                    <tr class="state-${cmd.state}">
+                        <td>${formatTime(cmd.created_at)}</td>
+                        <td>${cmd.cmd_id}</td>
+                        <td>-</td>
+                        <td>${cmd.action}</td>
+                        <td>${cmd.symbol}</td>
+                        <td class="state-${cmd.state}">${cmd.state}</td>
+                        <td class="ok-${cmd.ok}">${cmd.ok !== undefined ? (cmd.ok ? '✓' : '✗') : '-'}</td>
+                        <td>${cmd.message || cmd.error || '-'}</td>
+                        <td>${cmd.ticket || '-'}</td>
+                        <td>${cmd.latency_est_ms ? cmd.latency_est_ms.toFixed(0) : '-'}</td>
+                    </tr>
+                `).join('');
+                
+                // 更新持仓表格
+                const posBody = document.getElementById('positionsBody');
+                if (data.positions && data.positions.length > 0) {
+                    posBody.innerHTML = data.positions.map(pos => `
+                        <tr>
+                            <td>${pos.ticket}</td>
+                            <td>${pos.symbol}</td>
+                            <td>${pos.type}</td>
+                            <td>${pos.lots}</td>
+                            <td>${pos.open_price}</td>
+                            <td>${pos.sl || '-'}</td>
+                            <td>${pos.tp || '-'}</td>
+                            <td>${pos.profit || '-'}</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    posBody.innerHTML = '<tr><td colspan="8">暂无持仓</td></tr>';
                 }
-                if (p.order_type === 'LIMIT' && p.limit_price <= 0) {
-                    alert('限价单需要填写有效的委托价格');
-                    return;
-                }
-
-                const payload = {
-                    action: 'OPEN',
-                    side: p.side,
-                    symbol: p.symbol,
-                    order_type: p.order_type,     // MARKET / LIMIT
-                    limit_price: p.limit_price,   // 0 表示市价
-                    max_slippage: p.max_slippage, // 允许点差（点）
-                    position_pct: p.position_pct,
-                    tp: p.tp,
-                    sl: p.sl,
-                    source: 'web_panel'
-                };
-
-                fetch('/api/mt4_commands', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                })
-                .then(r => r.json())
-                .then(d => {
-                    if (d.status === 'success') {
-                        alert('已发送至 MT4 指令队列，Command ID: ' + d.command_id);
+                
+                // 更新报价表格
+                const quoteBody = document.getElementById('quotesBody');
+                if (data.quotes && data.quotes.length > 0) {
+                    const latestQuote = data.quotes[data.quotes.length - 1];
+                    if (latestQuote.quotes) {
+                        quoteBody.innerHTML = Object.entries(latestQuote.quotes).map(([sym, q]) => `
+                            <tr>
+                                <td>${sym}</td>
+                                <td>${q.bid}</td>
+                                <td>${q.ask}</td>
+                                <td>${q.spread_points || '-'}</td>
+                                <td>${formatTime(latestQuote.timestamp)}</td>
+                            </tr>
+                        `).join('');
                     } else {
-                        alert('发送指令失败: ' + (d.message || '未知错误'));
+                        quoteBody.innerHTML = '<tr><td colspan="5">暂无报价数据</td></tr>';
                     }
-                })
-                .catch(err => {
-                    alert('网络错误: ' + err);
-                });
+                } else {
+                    quoteBody.innerHTML = '<tr><td colspan="5">暂无报价数据</td></tr>';
+                }
+                
+            } catch (error) {
+                console.error('Load data error:', error);
             }
-
-            function saveSettings() {
-                const baseCapital = Number(document.getElementById('baseCapitalInput').value) || 0;
-                const maxRisk = Number(document.getElementById('maxRiskInput').value) || 0;
-                const leverage = Number(document.getElementById('defaultLeverageInput').value) || 1;
-
-                const payload = {
-                    base_capital: baseCapital,
-                    max_risk_pct: maxRisk,
-                    default_leverage: leverage
-                    // TODO: 这里可以预留一个 /api/settings JSON 接口进行持久化
-                };
-                console.log('预留仓位配置 JSON payload:', payload);
-                alert('当前为前端占位保存逻辑，可根据需要接入后端 /api/settings 保存配置。');
-            }
-
-            // 预留：统一管理 JSON 接口地址，后续可直接用 fetch 调用
-            const API_ENDPOINTS = {
-                summary: '/api/summary',
-                openPositions: '/api/open_positions',
-                history: '/api/history',
-                mt4Commands: '/api/mt4_commands'
+        }
+        
+        async function sendCommand() {
+            const account = getAccount();
+            const action = document.getElementById('actionSelect').value;
+            const symbol = document.getElementById('symbolInput').value;
+            const side = document.getElementById('sideInput').value;
+            const volume = parseFloat(document.getElementById('volumeInput').value);
+            const riskPct = parseFloat(document.getElementById('riskPctInput').value);
+            const slPoints = parseInt(document.getElementById('slPointsInput').value);
+            const tpPoints = parseInt(document.getElementById('tpPointsInput').value);
+            const maxSpread = parseInt(document.getElementById('maxSpreadInput').value);
+            const ticket = document.getElementById('ticketInput').value;
+            
+            const payload = {
+                account: account,
+                action: action,
+                ttl_sec: 10,
             };
-
-            // 锁仓相关：单笔 / 全部（MT4 端再校验是否有止盈止损）
-            function lockOnePosition(tradeId) {
-                const payload = {
-                    action: 'LOCK_ONE',
-                    trade_id: tradeId,
-                    source: 'web_panel'
-                };
-                fetch(API_ENDPOINTS.mt4Commands, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                })
-                .then(r => r.json())
-                .then(d => {
-                    if (d.status === 'success') {
-                        alert('已发送单笔锁仓指令，Trade ID: ' + tradeId);
-                    } else {
-                        alert('锁仓指令发送失败: ' + (d.message || '未知错误'));
-                    }
-                })
-                .catch(err => alert('网络错误: ' + err));
+            
+            if (action === 'MARKET') {
+                payload.symbol = symbol;
+                payload.side = side;
+                if (volume > 0) payload.volume = volume;
+                if (riskPct > 0) payload.risk_alloc_pct = riskPct;
+                if (slPoints > 0) payload.sl_points = slPoints;
+                if (tpPoints > 0) payload.tp_points = tpPoints;
+                if (maxSpread > 0) payload.max_spread_points = maxSpread;
+            } else if (action === 'LIMIT') {
+                payload.symbol = symbol;
+                payload.side = side;
+                payload.volume = volume;
+                payload.price = parseFloat(prompt('请输入限价价格:') || '0');
+            } else if (action === 'CLOSE') {
+                payload.ticket = parseInt(ticket);
+            } else if (action === 'QUOTE') {
+                payload.symbols = symbol.split(',').map(s => s.trim());
             }
-
-            function lockAllPositions() {
-                if (!confirm('确认一键锁定所有符合条件的持仓？（MT4 端仅会锁定已设置止盈止损的仓位）')) {
-                    return;
-                }
-                const payload = {
-                    action: 'LOCK_ALL',
-                    source: 'web_panel'
-                };
-                fetch(API_ENDPOINTS.mt4Commands, {
+            
+            try {
+                const res = await fetch('/web/api/command', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                })
-                .then(r => r.json())
-                .then(d => {
-                    if (d.status === 'success') {
-                        alert('已发送一键锁仓指令');
-                    } else {
-                        alert('一键锁仓发送失败: ' + (d.message || '未知错误'));
-                    }
-                })
-                .catch(err => alert('网络错误: ' + err));
-            }
-
-            // 请求 MT4 即时报价：发送 QUOTE_REQUEST 指令，然后轮询 /api/mt4_quote
-            function requestQuote(side) {
-                const symbolEl = document.getElementById(side + 'Symbol');
-                const statusEl = document.getElementById(side + 'QuoteStatus');
-                if (!symbolEl || !statusEl) return;
-                const symbol = (symbolEl.value || '').trim().toUpperCase();
-                if (!symbol) {
-                    alert('请先输入交易品种');
-                    return;
-                }
-
-                statusEl.classList.remove('ready');
-                statusEl.textContent = '等待 MT4 报价...';
-
-                const payload = {
-                    action: 'QUOTE_REQUEST',
-                    symbol: symbol,
-                    source: 'web_panel'
-                };
-                fetch(API_ENDPOINTS.mt4Commands, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                }).then(() => {
-                    // 轻量轮询报价，最多尝试 10 次
-                    let attempts = 0;
-                    const timer = setInterval(() => {
-                        attempts++;
-                        fetch('/api/mt4_quote?symbol=' + encodeURIComponent(symbol))
-                          .then(r => r.json())
-                          .then(d => {
-                              if (d.status === 'success' && d.data) {
-                                  clearInterval(timer);
-                                  const bid = d.data.bid;
-                                  const ask = d.data.ask;
-                                  statusEl.classList.add('ready');
-                                  statusEl.textContent = symbol + ' 报价 Bid:' +
-                                      bid.toFixed(2) + ' / Ask:' + ask.toFixed(2);
-                              }
-                          })
-                          .catch(() => {});
-                        if (attempts >= 10) {
-                            clearInterval(timer);
-                            if (!statusEl.classList.contains('ready')) {
-                                statusEl.textContent = '报价超时';
-                            }
-                        }
-                    }, 1000);
-                }).catch(err => {
-                    statusEl.textContent = '发送报价请求失败';
-                    console.error(err);
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
                 });
+                
+                // 检查响应内容类型
+                const contentType = res.headers.get('content-type');
+                let result;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    result = await res.json();
+                } else {
+                    // 如果不是JSON，读取文本内容
+                    const text = await res.text();
+                    console.error('非JSON响应:', text.substring(0, 200));
+                    throw new Error(`服务器返回非JSON响应 (HTTP ${res.status}): ${text.substring(0, 100)}`);
+                }
+                
+                const resultDiv = document.getElementById('commandResult');
+                if (res.ok && result.ok) {
+                    resultDiv.innerHTML = `<div class="success">✓ 命令已创建: ${result.id} (deduped: ${result.deduped})</div>`;
+                } else {
+                    const errorMsg = result.error || result.message || `HTTP ${res.status}`;
+                    resultDiv.innerHTML = `<div class="error">✗ 错误: ${errorMsg}</div>`;
+                }
+                
+                // 刷新数据
+                setTimeout(loadData, 500);
+            } catch (error) {
+                console.error('发送命令错误:', error);
+                const errorMsg = error.message || String(error);
+                document.getElementById('commandResult').innerHTML = `<div class="error">✗ 请求失败: ${errorMsg}</div>`;
             }
+        }
+        
+        // 自动刷新
+        document.getElementById('autoRefresh').addEventListener('change', function(e) {
+            if (e.target.checked) {
+                autoRefreshInterval = setInterval(loadData, 1000);
+            } else {
+                if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            }
+        });
+        
+        // 初始加载
+        loadData();
+        if (document.getElementById('autoRefresh').checked) {
+            autoRefreshInterval = setInterval(loadData, 1000);
+        }
+    </script>
+</body>
+</html>
+'''
 
-            startClock();
-            // 初始化预估名义
-            updateNotional('long', Number(document.getElementById('longPositionInput').value));
-            updateNotional('short', Number(document.getElementById('shortPositionInput').value));
-        </script>
-    </body>
-    </html>
-    ''',
-                                  trading_time_flag=trading_time_flag,
-                                  current_time=current_time_str,
-                                  summary=summary,
-                                  open_positions=open_positions,
-                                  history_trades=history_trades)
+# ==================== 展示页面（HTML，路径：/web 或 /）===================
 
+@app.route('/web', methods=['GET'])
+def web_page():
+    """可视化展示页面（HTML）"""
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/', methods=['GET'])
+def index():
+    """首页重定向到 /web"""
+    return render_template_string('<script>window.location.href="/web";</script>')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, threaded=True)
-
+    print("=" * 60)
+    print("MT4 量化交易系统后端启动")
+    print("=" * 60)
+    print("展示页面: http://localhost:5000/web 或 http://localhost:5000/")
+    print("MT4 API: /web/api/mt4/... (仅JSON)")
+    print("前端API: /web/api/... (仅JSON)")
+    print("=" * 60)
+    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
