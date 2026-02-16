@@ -62,20 +62,44 @@ def get_json_or_400():
     - 返回 (None, response) 表示解析失败，直接在视图中 return response
     """
     try:
-        # 先读取原始 body，避免 get_json 消费流后拿不到原始内容
+        # 先读取原始 body（字符串形式），不再依赖 Content-Type 头
         raw_body = request.get_data(as_text=True) or ""
-        data = request.get_json(silent=True)
-        if not data:
-            # 解析失败或空 JSON，返回 400，并附带原始 body 方便调试
+        if not raw_body.strip():
             resp = jsonify({
                 "ok": False,
-                "error": "invalid json",
+                "error": "empty body",
                 "raw": raw_body,
                 "path": request.path,
                 "method": request.method,
             })
             resp.headers['Content-Type'] = 'application/json'
             return None, (resp, 400)
+
+        try:
+            data = json.loads(raw_body)
+        except Exception as parse_err:
+            # 解析失败，返回 400，并附带原始 body 方便调试
+            resp = jsonify({
+                "ok": False,
+                "error": f"invalid json: {parse_err}",
+                "raw": raw_body,
+                "path": request.path,
+                "method": request.method,
+            })
+            resp.headers['Content-Type'] = 'application/json'
+            return None, (resp, 400)
+
+        if not isinstance(data, dict):
+            resp = jsonify({
+                "ok": False,
+                "error": "json root must be object",
+                "raw": raw_body,
+                "path": request.path,
+                "method": request.method,
+            })
+            resp.headers['Content-Type'] = 'application/json'
+            return None, (resp, 400)
+
         return data, None
     except Exception as e:
         # 兜底保护，任何异常都返回 400
