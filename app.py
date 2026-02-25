@@ -1,1453 +1,497 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-MT4 量化交易系统后端
-提供命令队列、去重/幂等、数据展示等功能
-"""
-
-from flask import Flask, request, jsonify, render_template_string
-from datetime import datetime, timedelta
-import uuid
-import hashlib
+import os
 import json
 import threading
-import time
-from collections import defaultdict, deque
-from typing import Dict, List, Optional
+import traceback
+from datetime import datetime
+from collections import deque
+from flask import Flask, request, render_template_string, redirect, url_for
 
 app = Flask(__name__)
 
-# ==================== 数据存储（内存） ====================
-# 命令队列：{account: deque([command, ...])}
-command_queues: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
+# ==================== 全局数据结构 ====================
+MAX_HISTORY = 50
+history = deque(maxlen=MAX_HISTORY)
+history_lock = threading.Lock()
 
-# 命令状态追踪：{cmd_id: command_state}
-command_states: Dict[str, dict] = {}
-
-# 最新状态：{account: status_data}
-latest_status: Dict[str, dict] = {}
-
-# 执行回报：{account: deque([report, ...])}
-reports: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
-
-# 报价数据：{account: deque([quote, ...])}
-quotes: Dict[str, deque] = defaultdict(lambda: deque(maxlen=50))
-
-# 持仓数据：{account: positions_data}
-positions_data: Dict[str, dict] = {}
-
-# 去重窗口：{account: {hash: (cmd_id, timestamp)}}
-dedupe_cache: Dict[str, Dict[str, tuple]] = defaultdict(dict)
-
-# 统计指标
-metrics = {
-    'total_commands': 0,
-    'dedupe_hits': 0,
-    'delivered_count': 0,
-    'executed_count': 0,
-    'error_count': 0,
-    'last_error': None,
-    'last_error_time': None,
-}
-
-# 锁
-data_lock = threading.Lock()
+commands = []
+commands_lock = threading.Lock()
+cmd_counter = 0
 
 # ==================== 工具函数 ====================
+def format_command(cmd):
+    """将指令字典格式化为字符串，供MT4解析"""
+    base = f"{cmd['direction']},{cmd['symbol']},{cmd['volume']}"
+    if cmd['sl'] is not None and cmd['tp'] is not None:
+        return f"{base},{cmd['sl']},{cmd['tp']}"
+    elif cmd['sl'] is not None:
+        return f"{base},{cmd['sl']},0"
+    elif cmd['tp'] is not None:
+        return f"{base},0,{cmd['tp']}"
+    else:
+        return base
 
-def get_json_or_400():
+def get_client_ip():
+    """尝试从请求头获取真实IP"""
+    return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
+
+def extract_latest_details(record):
     """
-    安全解析 JSON 请求体。
-    - 返回 (data, None) 表示解析成功
-    - 返回 (None, response) 表示解析失败，直接在视图中 return response
+    从记录中提取详细字段，用于模板展示。
+    即使解析失败也返回一个包含错误信息的字典，确保模板总能拿到数据。
     """
-    try:
-        # 先读取原始 body（字符串形式），不再依赖 Content-Type 头
-        raw_body = request.get_data(as_text=True) or ""
-        if not raw_body.strip():
-            resp = jsonify({
-                "ok": False,
-                "error": "empty body",
-                "raw": raw_body,
-                "path": request.path,
-                "method": request.method,
-            })
-            resp.headers['Content-Type'] = 'application/json'
-            return None, (resp, 400)
+    if not record:
+        return None
 
-        try:
-            data = json.loads(raw_body)
-        except Exception as parse_err:
-            # 解析失败，返回 400，并附带原始 body 方便调试
-            resp = jsonify({
-                "ok": False,
-                "error": f"invalid json: {parse_err}",
-                "raw": raw_body,
-                "path": request.path,
-                "method": request.method,
-            })
-            resp.headers['Content-Type'] = 'application/json'
-            return None, (resp, 400)
+    base_info = {
+        'received_at': record.get('received_at'),
+        'ip': record.get('ip'),
+        'body_raw_preview': record.get('body_raw', '')[:500] + ('...' if len(record.get('body_raw', '')) > 500 else '')
+    }
 
-        if not isinstance(data, dict):
-            resp = jsonify({
-                "ok": False,
-                "error": "json root must be object",
-                "raw": raw_body,
-                "path": request.path,
-                "method": request.method,
-            })
-            resp.headers['Content-Type'] = 'application/json'
-            return None, (resp, 400)
+    if record.get('parse_error'):
+        return {
+            **base_info,
+            'error': f"JSON 解析失败: {record['parse_error']}",
+            'full_error': record.get('parse_error_detail', ''),
+            'remaining_data': record.get('remaining_data')  # 如果有剩余数据，显示
+        }
 
-        return data, None
-    except Exception as e:
-        # 兜底保护，任何异常都返回 400
-        raw_body = request.get_data(as_text=True) or ""
-        resp = jsonify({
-            "ok": False,
-            "error": f"invalid json: {e}",
-            "raw": raw_body,
-            "path": request.path,
-            "method": request.method,
-        })
-        resp.headers['Content-Type'] = 'application/json'
-        return None, (resp, 400)
+    parsed = record.get('parsed')
+    if parsed is None:
+        return {**base_info, 'error': 'JSON 解析失败，但无具体错误信息'}
 
+    metrics = parsed.get('metrics', {})
+    positions = parsed.get('positions', [])
+    for pos in positions:
+        if 'open_time' in pos and isinstance(pos['open_time'], (int, float)):
+            try:
+                pos['open_time_str'] = datetime.fromtimestamp(pos['open_time']).strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                pos['open_time_str'] = str(pos['open_time'])
+        else:
+            pos['open_time_str'] = 'N/A'
 
-def generate_nonce() -> str:
-    """生成随机 nonce"""
-    return uuid.uuid4().hex[:8]
+    return {
+        **base_info,
+        'account': parsed.get('account'),
+        'server': parsed.get('server'),
+        'ts': parsed.get('ts'),
+        'balance': parsed.get('balance'),
+        'equity': parsed.get('equity'),
+        'margin': parsed.get('margin'),
+        'free_margin': parsed.get('free_margin'),
+        'margin_level': parsed.get('margin_level'),
+        'floating_pnl': parsed.get('floating_pnl'),
+        'day_start_equity': parsed.get('day_start_equity'),
+        'daily_pnl': parsed.get('daily_pnl'),
+        'daily_return': parsed.get('daily_return'),
+        'poll_latency_ms': metrics.get('poll_latency_ms'),
+        'last_http_code': metrics.get('last_http_code'),
+        'last_error': metrics.get('last_error'),
+        'positions': positions,
+        'remaining_data': record.get('remaining_data')
+    }
 
-def generate_cmd_id() -> str:
-    """生成命令 ID"""
-    return f"cmd_{uuid.uuid4().hex[:12]}"
-
-def compute_dedupe_hash(action: str, account: str, **kwargs) -> str:
-    """计算去重哈希"""
-    # 根据 action 提取关键字段
-    key_parts = [action, account]
-    
-    if action == 'MARKET':
-        key_parts.extend([
-            str(kwargs.get('symbol', '')),
-            str(kwargs.get('side', '')),
-            str(kwargs.get('volume', kwargs.get('risk_alloc_pct', ''))),
-            str(kwargs.get('sl_points', '')),
-            str(kwargs.get('tp_points', '')),
-        ])
-    elif action == 'LIMIT':
-        key_parts.extend([
-            str(kwargs.get('symbol', '')),
-            str(kwargs.get('side', '')),
-            str(kwargs.get('price', '')),
-            str(kwargs.get('volume', '')),
-        ])
-    elif action == 'CLOSE':
-        key_parts.extend([
-            str(kwargs.get('ticket', '')),
-        ])
-    elif action == 'QUOTE':
-        key_parts.extend([
-            ','.join(sorted(kwargs.get('symbols', []))),
-        ])
-    
-    key_str = '|'.join(key_parts)
-    return hashlib.md5(key_str.encode()).hexdigest()
-
-def cleanup_expired_commands():
-    """清理过期命令（后台线程）"""
-    while True:
-        try:
-            time.sleep(5)
-            now = time.time()
-            with data_lock:
-                for account, queue in list(command_queues.items()):
-                    # 清理队列中过期命令
-                    expired_indices = []
-                    for i, cmd in enumerate(queue):
-                        if cmd.get('created_at', 0) + cmd.get('ttl_sec', 0) < now:
-                            expired_indices.append(i)
-                            cmd_id = cmd.get('id')
-                            if cmd_id in command_states:
-                                command_states[cmd_id]['state'] = 'EXPIRED'
-                    
-                    # 从后往前删除，避免索引变化
-                    for i in reversed(expired_indices):
-                        queue.remove(queue[i])
-                
-                # 清理去重缓存（超过2秒的）
-                for account in list(dedupe_cache.keys()):
-                    cache = dedupe_cache[account]
-                    expired_keys = [
-                        k for k, (_, ts) in cache.items()
-                        if now - ts > 2.0
-                    ]
-                    for k in expired_keys:
-                        del cache[k]
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-
-# 启动清理线程
-cleanup_thread = threading.Thread(target=cleanup_expired_commands, daemon=True)
-cleanup_thread.start()
-
-# ==================== 工具函数：日志记录 ====================
-
-def log_request(route_name):
-    """记录请求信息"""
-    try:
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        remote_addr = request.remote_addr or 'unknown'
-        method = request.method
-        path = request.path
-        headers = dict(request.headers)
-        
-        # 获取请求体（前500字节）
-        try:
-            body_data = request.get_data(as_text=True)
-            if body_data:
-                body_preview = body_data[:500]
-            else:
-                body_preview = "(empty)"
-        except:
-            body_preview = "(无法读取)"
-        
-        print(f"[{timestamp}] [{route_name}] {method} {path}")
-        print(f"  Remote: {remote_addr}")
-        print(f"  Headers: {headers}")
-        print(f"  Body (first 500 bytes): {body_preview}")
-    except Exception as log_err:
-        print(f"[LOG ERROR] Failed to log request: {log_err}")
-
-def safe_json_response(ok, data=None, error=None, trace=None, status_code=200):
-    """安全创建 JSON 响应"""
-    try:
-        response_data = {'ok': ok}
-        if data:
-            response_data.update(data)
-        if error:
-            response_data['error'] = error
-        if trace:
-            response_data['trace'] = trace
-        
-        response = jsonify(response_data)
-        response.headers['Content-Type'] = 'application/json'
-        return response, status_code
-    except Exception as e:
-        # 如果连 JSON 响应都无法创建，返回最简单的响应
-        print(f"[CRITICAL] Cannot create JSON response: {e}")
-        from flask import Response
-        return Response(
-            '{"ok":false,"error":"Internal error"}',
-            status=200,
-            mimetype='application/json'
-        )
-
-# ==================== 全局错误处理 ====================
-
-@app.errorhandler(404)
-def not_found(error):
-    """404错误返回JSON"""
-    return safe_json_response(False, error='Not found', status_code=404)
-
-@app.errorhandler(405)
-def method_not_allowed(error):
-    """405错误返回JSON"""
-    return safe_json_response(False, error='Method not allowed', status_code=405)
-
-@app.errorhandler(Exception)
-def handle_exception(e):
-    """捕获所有未处理的异常，返回JSON（状态码200避免MT4异常）"""
-    import traceback
-    error_msg = str(e)
-    error_type = e.__class__.__name__
-    traceback_str = traceback.format_exc()
-    
-    # 打印完整 traceback 到控制台
-    print(f"[GLOBAL ERROR HANDLER] {error_type}: {error_msg}")
-    print(traceback_str)
-    
-    # 返回 JSON 错误结构，状态码 200（避免 MT4 逻辑异常）
-    return safe_json_response(
-        ok=False,
-        error=error_msg,
-        trace=error_type
+# ==================== 路由 ====================
+@app.route('/')
+def index():
+    with history_lock:
+        hist_list = list(reversed(history))  # 最新的在前
+        latest_record = hist_list[0] if hist_list else None
+        latest_detail = extract_latest_details(latest_record)
+    with commands_lock:
+        cmds_copy = commands.copy()
+    return render_template_string(
+        HTML_TEMPLATE,
+        history=hist_list,
+        latest=latest_detail,
+        latest_raw=latest_record,
+        commands=cmds_copy,
+        MAX_HISTORY=MAX_HISTORY
     )
 
-# ==================== MT4 API 接口（仅JSON，路径：/web/api/mt4/...）===================
+@app.route('/web/api/echo', methods=['POST'])
+def mt4_webhook():
+    raw_body = request.get_data(as_text=True)
+    cleaned_body = raw_body.strip()
+    client_ip = get_client_ip()
+    headers_dict = dict(request.headers)
 
-@app.route('/web/api/mt4/commands', methods=['GET', 'POST'])
-def get_commands():
-    """MT4 轮询拉取命令 - 支持GET和POST"""
-    log_request('get_commands')
+    parsed_json = None
+    parse_error = None
+    parse_error_detail = None
+    remaining_data = None
+
     try:
-        # 优先从POST JSON获取，其次从GET参数获取
-        account = ''
-        max_count = 50
-        data = {}
-        raw_data = ''  # 初始化 raw_data
-        
-        try:
-            if request.method == 'POST':
-                # 检查 Content-Type
-                content_type = request.headers.get('Content-Type', '')
-                print(f"[MT4 Commands] Content-Type: {content_type}")
-                
-                # 获取原始数据用于调试
-                raw_data = request.get_data(as_text=True)
-                print(f"[MT4 Commands] Raw POST data (first 500 chars): {raw_data[:500]}")
-                
-                # 尝试解析 JSON
-                try:
-                    data = request.get_json(force=True, silent=False) or {}
-                    print(f"[MT4 Commands] Parsed JSON: {data}")
-                except Exception as json_err:
-                    print(f"[MT4 Commands] JSON parse error: {json_err}")
-                    # 如果 JSON 解析失败，尝试从原始数据中提取
-                    data = {}
-                    # 尝试从 GET 参数获取
-                    account = request.args.get('account', '')
-                
-                account = data.get('account', '') or request.args.get('account', '')
-                # 安全转换 max_count
-                try:
-                    max_val = data.get('max') or request.args.get('max', 50)
-                    max_count = int(max_val) if max_val else 50
-                except (ValueError, TypeError):
-                    max_count = 50
-            else:
-                account = request.args.get('account', '')
-                try:
-                    max_count = int(request.args.get('max', 50))
-                except (ValueError, TypeError):
-                    max_count = 50
-        except Exception as parse_err:
-            import traceback
-            print(f"[MT4 Commands] Parse error: {parse_err}")
-            print(traceback.format_exc())
-            account = request.args.get('account', '')
-            max_count = 50
-        
-        # 调试日志
-        print(f"[MT4 Commands] Method: {request.method}, Account: '{account}', Max: {max_count}")
-        print(f"[MT4 Commands] GET args: {dict(request.args)}")
-        print(f"[MT4 Commands] POST data keys: {list(data.keys()) if data else 'N/A'}")
-        
-        if not account:
-            # 更详细的错误信息
-            error_details = {
-                'method': request.method,
-                'content_type': request.headers.get('Content-Type', 'N/A'),
-                'post_data_keys': list(data.keys()) if data else [],
-                'get_args': dict(request.args),
-                'raw_post_data_preview': raw_data[:200] if request.method == 'POST' and raw_data else 'N/A'
-            }
-            error_msg = f"account required. Details: {error_details}"
-            print(f"[MT4 Commands] ERROR: {error_msg}")
-            
-            # 提供更友好的错误响应
-            response_data = {
-                'error': 'account required',
-                'message': '缺少必需的 account 参数。请通过以下方式之一提供：',
-                'solutions': [
-                    'POST 请求：在 JSON 体中包含 {"account": "账户号", "max": 50}',
-                    'GET 请求：在 URL 参数中包含 ?account=账户号&max=50',
-                    '例如：/web/api/mt4/commands?account=833711'
-                ],
-                'debug': error_details
-            }
-            response = jsonify(response_data)
-            response.headers['Content-Type'] = 'application/json'
-            return response, 400
-        
-        try:
-            with data_lock:
-                queue = command_queues.get(account, deque())
-                commands = []
-                delivered_ids = []
-                
-                # 批量取走命令
-                max_to_take = min(max_count, len(queue))
-                for _ in range(max_to_take):
-                    if queue:
-                        try:
-                            cmd = queue.popleft()
-                            cmd_id = cmd.get('id', '')
-                            
-                            if not cmd_id:
-                                continue
-                            
-                            # 创建命令副本，确保JSON可序列化
-                            clean_cmd = {}
-                            try:
-                                for key, value in cmd.items():
-                                    # 跳过None值，转换数据类型
-                                    if value is None:
-                                        continue
-                                    elif isinstance(value, float):
-                                        # 对于浮点数，如果是整数部分，转换为int
-                                        if key in ['created_at', 'ttl_sec']:
-                                            try:
-                                                clean_cmd[key] = int(value)
-                                            except (ValueError, OverflowError):
-                                                clean_cmd[key] = 0
-                                        else:
-                                            # 检查是否为 NaN 或 Inf
-                                            if not (value != value or value == float('inf') or value == float('-inf')):
-                                                clean_cmd[key] = value
-                                    elif isinstance(value, (str, int, bool)):
-                                        clean_cmd[key] = value
-                                    elif isinstance(value, (list, dict)):
-                                        # 递归清理嵌套结构
-                                        try:
-                                            json.dumps(value)  # 测试是否可序列化
-                                            clean_cmd[key] = value
-                                        except (TypeError, ValueError):
-                                            clean_cmd[key] = str(value)
-                                    else:
-                                        # 其他类型转换为字符串
-                                        clean_cmd[key] = str(value)
-                            except Exception as clean_err:
-                                print(f"[MT4 Commands] Clean cmd error: {clean_err}")
-                                # 如果清理失败，至少保留基本字段
-                                clean_cmd = {
-                                    'id': cmd_id,
-                                    'action': cmd.get('action', 'UNKNOWN'),
-                                    'account': cmd.get('account', account),
-                                }
-                            
-                            commands.append(clean_cmd)
-                            delivered_ids.append(cmd_id)
-                            
-                            # 更新状态为 DELIVERED
-                            try:
-                                if cmd_id in command_states:
-                                    command_states[cmd_id]['state'] = 'DELIVERED'
-                                    command_states[cmd_id]['delivered_at'] = time.time()
-                                else:
-                                    command_states[cmd_id] = {
-                                        'state': 'DELIVERED',
-                                        'delivered_at': time.time(),
-                                        'created_at': clean_cmd.get('created_at', time.time()),
-                                        'action': clean_cmd.get('action', 'UNKNOWN'),
-                                        'symbol': clean_cmd.get('symbol', ''),
-                                    }
-                            except Exception as state_err:
-                                print(f"[MT4 Commands] State update error: {state_err}")
-                        except Exception as cmd_err:
-                            print(f"[MT4 Commands] Process cmd error: {cmd_err}")
-                            continue
-                
-                metrics['delivered_count'] += len(commands)
-                queue_len = len(queue)
-        except Exception as lock_err:
-            print(f"[MT4 Commands] Lock error: {lock_err}")
-            import traceback
-            print(traceback.format_exc())
-            commands = []
-            queue_len = 0
-        
-        # 确保响应数据可序列化
-        try:
-            response_data = {
-                'commands': commands,
-                'server_ts': int(time.time()),
-                'queue_len': queue_len,
-            }
-            # 测试序列化
-            json.dumps(response_data)
-        except Exception as json_err:
-            print(f"[MT4 Commands] JSON serialization error: {json_err}")
-            # 如果序列化失败，返回空命令列表
-            response_data = {
-                'commands': [],
-                'server_ts': int(time.time()),
-                'queue_len': 0,
-                'error': 'Serialization error',
-            }
-        
-        response = jsonify(response_data)
-        response.headers['Content-Type'] = 'application/json'
-        return response
+        # 使用 raw_decode 解析第一个 JSON 对象，并获取剩余部分
+        decoder = json.JSONDecoder()
+        parsed_json, idx = decoder.raw_decode(cleaned_body)
+        remaining = cleaned_body[idx:].strip()
+        if remaining:
+            remaining_data = remaining[:200]  # 记录前200字符用于调试
+            print(f"检测到JSON后剩余数据: {remaining_data}")
+    except json.JSONDecodeError as e:
+        parse_error = str(e)
+        parse_error_detail = traceback.format_exc()
+        print(f"JSON解析错误: {e}")
+        print(f"原始body(前500字符): {cleaned_body[:500]}")
     except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[MT4 Commands] Fatal error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(
-            ok=False,
-            data={
-                'commands': [],
-                'server_ts': int(time.time()),
-                'queue_len': 0,
-            },
-            error=error_msg,
-            trace=error_type
-        )
+        parse_error = f"未知异常: {str(e)}"
+        parse_error_detail = traceback.format_exc()
+        print(f"解析时发生未知异常: {e}")
 
-@app.route('/web/api/mt4/status', methods=['POST'])
-def post_status():
-    """MT4 上报状态"""
-    log_request('post_status')
+    record = {
+        'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'ip': client_ip,
+        'method': request.method,
+        'path': request.path,
+        'headers': headers_dict,
+        'body_raw': raw_body,
+        'parsed': parsed_json,
+        'parse_error': parse_error,
+        'parse_error_detail': parse_error_detail,
+        'remaining_data': remaining_data,
+        # 为快速展示提取部分字段（表格中用）
+        'account': parsed_json.get('account') if parsed_json else None,
+        'server': parsed_json.get('server') if parsed_json else None,
+        'balance': parsed_json.get('balance') if parsed_json else None,
+        'equity': parsed_json.get('equity') if parsed_json else None,
+        'floating_pnl': parsed_json.get('floating_pnl') if parsed_json else None,
+    }
+
+    with history_lock:
+        history.appendleft(record)
+
+    # 准备响应指令
+    response_lines = []
+    with commands_lock:
+        if commands:
+            for cmd in commands:
+                response_lines.append(format_command(cmd))
+            commands.clear()
+
+    if response_lines:
+        return '\n'.join(response_lines), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    else:
+        return 'NOCOMMAND', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+@app.route('/send_command', methods=['POST'])
+def send_command():
+    global cmd_counter
+    symbol = request.form.get('symbol', '').strip().upper()
+    direction = request.form.get('direction', '').strip().upper()
+    volume = request.form.get('volume', '').strip()
+    sl = request.form.get('sl', '').strip()
+    tp = request.form.get('tp', '').strip()
+
+    if not symbol or direction not in ['BUY', 'SELL'] or not volume:
+        return redirect(url_for('index'))
+
     try:
-        data, error_response = get_json_or_400()
-        if error_response is not None:
-            return error_response
-        
-        account = data.get('account', '')
-        
-        if not account:
-            return safe_json_response(ok=False, error='account required', status_code=400)
-        
-        with data_lock:
-            if account not in latest_status:
-                latest_status[account] = {}
-            latest_status[account].update({
-                **data,
-                'updated_at': time.time(),
-            })
-        
-        return safe_json_response(ok=True)
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[MT4 Status] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+        volume = float(volume)
+        sl = float(sl) if sl else None
+        tp = float(tp) if tp else None
+    except ValueError:
+        return redirect(url_for('index'))
 
-@app.route('/web/api/mt4/report', methods=['POST'])
-def post_report():
-    """MT4 上报执行结果"""
-    log_request('post_report')
-    try:
-        data, error_response = get_json_or_400()
-        if error_response is not None:
-            return error_response
-        
-        account = data.get('account', '')
-        cmd_id = data.get('cmd_id', '')
-        nonce = data.get('nonce', '')
-        
-        if not account or not cmd_id:
-            return safe_json_response(ok=False, error='account and cmd_id required', status_code=400)
-        
-        with data_lock:
-            # 校验 cmd_id 和 nonce
-            if cmd_id in command_states:
-                state = command_states[cmd_id]
-                
-                # 获取原始命令的 nonce 进行校验
-                original_nonce = ''
-                if 'command' in state and 'nonce' in state['command']:
-                    original_nonce = state['command']['nonce']
-                
-                # 校验 nonce（如果提供了）
-                nonce_valid = True
-                if nonce and original_nonce and nonce != original_nonce:
-                    nonce_valid = False
-                    state['state'] = 'INVALID_NONCE'
-                    metrics['error_count'] += 1
-                    metrics['last_error'] = f'Nonce mismatch for cmd_id: {cmd_id}'
-                    metrics['last_error_time'] = time.time()
-                else:
-                    state['state'] = 'REPORTED'
-                
-                state['report'] = data
-                state['reported_at'] = time.time()
-                
-                # 计算延迟
-                if 'delivered_at' in state:
-                    state['latency_est_ms'] = (state['reported_at'] - state['delivered_at']) * 1000
-                
-                ok = data.get('ok', False)
-                if ok and nonce_valid:
-                    metrics['executed_count'] += 1
-                elif not nonce_valid:
-                    # nonce 不匹配已在上面处理
-                    pass
-                else:
-                    metrics['error_count'] += 1
-                    metrics['last_error'] = data.get('error', 'unknown')
-                    metrics['last_error_time'] = time.time()
-            else:
-                # 未知命令 ID
-                state = {
-                    'state': 'INVALID_REPORT',
-                    'report': data,
-                    'reported_at': time.time(),
-                }
-                command_states[cmd_id] = state
-                metrics['error_count'] += 1
-                metrics['last_error'] = f'Unknown cmd_id: {cmd_id}'
-                metrics['last_error_time'] = time.time()
-            
-            # 保存到回报列表（使用 .get() 安全访问）
-            if account not in reports:
-                reports[account] = deque(maxlen=100)
-            reports[account].append({
-                **data,
-                'timestamp': time.time(),
-            })
-        
-        return safe_json_response(ok=True)
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[MT4 Report] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+    cmd = {
+        'id': cmd_counter,
+        'symbol': symbol,
+        'direction': direction,
+        'volume': volume,
+        'sl': sl,
+        'tp': tp,
+        'timestamp': datetime.now().strftime('%H:%M:%S')
+    }
+    with commands_lock:
+        commands.append(cmd)
+        cmd_counter += 1
 
-@app.route('/web/api/mt4/quote', methods=['POST'])
-def post_quote():
-    """MT4 上报报价"""
-    log_request('post_quote')
-    try:
-        data, error_response = get_json_or_400()
-        if error_response is not None:
-            return error_response
-        
-        account = data.get('account', '')
-        
-        if not account:
-            return safe_json_response(ok=False, error='account required', status_code=400)
-        
-        with data_lock:
-            if account not in quotes:
-                quotes[account] = deque(maxlen=50)
-            quotes[account].append({
-                **data,
-                'timestamp': time.time(),
-            })
-        
-        return safe_json_response(ok=True)
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[MT4 Quote] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+    return redirect(url_for('index'))
 
-@app.route('/web/api/mt4/positions', methods=['POST'])
-def post_positions():
-    """MT4 上报持仓"""
-    log_request('post_positions')
-    try:
-        data, error_response = get_json_or_400()
-        if error_response is not None:
-            return error_response
-        
-        account = data.get('account', '')
-        
-        if not account:
-            return safe_json_response(ok=False, error='account required', status_code=400)
-        
-        with data_lock:
-            positions_data[account] = {
-                **data,
-                'updated_at': time.time(),
-            }
-        
-        return safe_json_response(ok=True)
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[MT4 Positions] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+@app.route('/delete_command/<int:index>', methods=['POST'])
+def delete_command(index):
+    with commands_lock:
+        if 0 <= index < len(commands):
+            commands.pop(index)
+    return redirect(url_for('index'))
 
-# ==================== 前端 Web API 接口（仅JSON，路径：/web/api/...）===================
+@app.route('/clear_commands', methods=['POST'])
+def clear_commands():
+    with commands_lock:
+        commands.clear()
+    return redirect(url_for('index'))
 
-@app.route('/web/api/command', methods=['POST'])
-def create_command():
-    """创建命令（网页端调用）"""
-    log_request('create_command')
-    try:
-        # 检查Content-Type
-        if not request.is_json:
-            return safe_json_response(ok=False, error='Content-Type must be application/json')
-        
-        data = request.get_json(silent=True)
-        if not data:
-            return safe_json_response(ok=False, error='invalid json')
-        
-        account = data.get('account', '')
-        action = data.get('action', '')
-        
-        if not account or not action:
-            return safe_json_response(ok=False, error='account and action required')
-        
-        # 生成命令 ID 和 nonce
-        cmd_id = generate_cmd_id()
-        nonce = generate_nonce()
-        
-        # 去重检查（排除 account 和 action，因为它们已经作为位置参数传递）
-        dedupe_data = {k: v for k, v in data.items() if k not in ['account', 'action']}
-        dedupe_hash = compute_dedupe_hash(action, account, **dedupe_data)
-        deduped = False
-        
-        with data_lock:
-            # 检查去重窗口（使用 .get() 安全访问）
-            if account not in dedupe_cache:
-                dedupe_cache[account] = {}
-            cache = dedupe_cache[account]
-            
-            if dedupe_hash in cache:
-                existing_cmd_id, _ = cache[dedupe_hash]
-                # 如果命令还在队列中，返回已存在的 cmd_id
-                if existing_cmd_id in command_states:
-                    state = command_states[existing_cmd_id]
-                    if state.get('state') in ['QUEUED', 'DELIVERED']:
-                        deduped = True
-                        cmd_id = existing_cmd_id
-                        # 从原始命令获取 nonce
-                        if 'command' in state and 'nonce' in state['command']:
-                            nonce = state['command']['nonce']
-                        else:
-                            # 如果找不到，从队列中查找（使用 .get() 安全访问）
-                            queue = command_queues.get(account, deque())
-                            for cmd in queue:
-                                if cmd.get('id') == existing_cmd_id:
-                                    nonce = cmd.get('nonce', '')
-                                    break
-            
-            if not deduped:
-                # 创建新命令
-                command = {
-                    'id': cmd_id,
-                    'nonce': nonce,
-                    'action': action,
-                    'account': account,
-                    'created_at': time.time(),
-                    'ttl_sec': data.get('ttl_sec', 10),
-                    **{k: v for k, v in data.items() if k not in ['account', 'action', 'ttl_sec']}
-                }
-                
-                # 入队（使用 .get() 安全访问）
-                if account not in command_queues:
-                    command_queues[account] = deque(maxlen=1000)
-                command_queues[account].append(command)
-                
-                # 记录状态
-                command_states[cmd_id] = {
-                    'state': 'QUEUED',
-                    'created_at': command['created_at'],
-                    'action': action,
-                    'symbol': data.get('symbol', ''),
-                    'command': command,
-                }
-                
-                # 更新去重缓存
-                cache[dedupe_hash] = (cmd_id, time.time())
-                
-                metrics['total_commands'] += 1
-            else:
-                metrics['dedupe_hits'] += 1
-        
-        return safe_json_response(ok=True, data={
-            'id': cmd_id,
-            'nonce': nonce,
-            'deduped': deduped,
-        })
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[Create Command] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
-
-@app.route('/web/api/data', methods=['GET'])
-def get_data():
-    """获取数据（供前端拉取）"""
-    log_request('get_data')
-    try:
-        account = request.args.get('account', '')
-        
-        with data_lock:
-            # 获取命令状态列表（最近100条）
-            recent_states = sorted(
-                command_states.items(),
-                key=lambda x: x[1].get('created_at', 0),
-                reverse=True
-            )[:100]
-            
-            commands_list = []
-            for cmd_id, state in recent_states:
-                cmd_data = {
-                    'cmd_id': cmd_id,
-                    'state': state.get('state', 'UNKNOWN'),
-                    'action': state.get('action', ''),
-                    'symbol': state.get('symbol', ''),
-                    'created_at': state.get('created_at', 0),
-                    'delivered_at': state.get('delivered_at', 0),
-                    'reported_at': state.get('reported_at', 0),
-                    'latency_est_ms': state.get('latency_est_ms', 0),
-                }
-                if 'report' in state:
-                    report = state['report']
-                    cmd_data['ok'] = report.get('ok', False)
-                    cmd_data['message'] = report.get('message', '')
-                    cmd_data['ticket'] = report.get('ticket', '')
-                    cmd_data['error'] = report.get('error', '')
-                commands_list.append(cmd_data)
-            
-            # 获取账户状态（使用 .get() 安全访问）
-            status = latest_status.get(account, {})
-            
-            # 获取回报列表（使用 .get() 安全访问）
-            reports_list = list(reports.get(account, deque()))[-20:]
-            
-            # 获取报价列表（使用 .get() 安全访问）
-            quotes_list = list(quotes.get(account, deque()))[-10:]
-            
-            # 获取持仓（使用 .get() 安全访问）
-            positions = positions_data.get(account, {}).get('positions', [])
-            
-            # 计算统计（使用 .get() 安全访问）
-            queue_len = len(command_queues.get(account, deque()))
-            
-            # 最近1分钟的命令统计
-            now = time.time()
-            recent_commands = [
-                s for s in recent_states
-                if s[1].get('created_at', 0) > now - 60
-            ]
-            recent_success = sum(
-                1 for _, s in recent_commands
-                if s.get('report', {}).get('ok', False)
-            )
-            recent_total = len(recent_commands)
-            success_rate = (recent_success / recent_total * 100) if recent_total > 0 else 0
-            
-            # 平均延迟
-            latencies = [
-                s[1].get('latency_est_ms', 0)
-                for _, s in recent_states
-                if s[1].get('latency_est_ms', 0) > 0
-            ]
-            avg_latency = sum(latencies) / len(latencies) if latencies else 0
-        
-        return safe_json_response(ok=True, data={
-            'status': status,
-            'commands': commands_list,
-            'reports': reports_list,
-            'quotes': quotes_list,
-            'positions': positions,
-            'metrics': {
-                'queue_len': queue_len,
-                'total_commands': metrics['total_commands'],
-                'dedupe_hits': metrics['dedupe_hits'],
-                'delivered_count': metrics['delivered_count'],
-                'executed_count': metrics['executed_count'],
-                'error_count': metrics['error_count'],
-                'last_error': metrics['last_error'],
-                'last_error_time': metrics['last_error_time'],
-                'recent_commands_1min': recent_total,
-                'success_rate_1min': round(success_rate, 2),
-                'avg_latency_ms': round(avg_latency, 2),
-            },
-            'server_ts': time.time(),
-        })
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[Get Data] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
-
-# ==================== 健康检查和调试接口 ====================
-
-@app.route('/web/api/health', methods=['GET'])
-def health_check():
-    """健康检查接口"""
-    try:
-        instance_id = str(uuid.uuid4())[:8]
-        return safe_json_response(ok=True, data={
-            'server_time': datetime.now().isoformat(),
-            'instance_id': instance_id,
-            'timestamp': time.time(),
-        })
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[Health Check] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
-
-@app.route('/web/api/debug/queues', methods=['GET'])
-def debug_queues():
-    """调试接口：查看队列状态"""
-    log_request('debug_queues')
-    try:
-        with data_lock:
-            # 所有账户队列长度
-            queue_info = {}
-            for account, queue in command_queues.items():
-                queue_info[account] = {
-                    'queue_len': len(queue),
-                    'queue_items': [cmd.get('id', 'unknown') for cmd in list(queue)[:10]]  # 最近10条
-                }
-            
-            # 最近命令列表（最近20条）
-            recent_commands = []
-            sorted_states = sorted(
-                command_states.items(),
-                key=lambda x: x[1].get('created_at', 0),
-                reverse=True
-            )[:20]
-            for cmd_id, state in sorted_states:
-                recent_commands.append({
-                    'cmd_id': cmd_id,
-                    'state': state.get('state', 'UNKNOWN'),
-                    'action': state.get('action', ''),
-                    'created_at': state.get('created_at', 0),
-                })
-            
-            # 最近 report 列表（最近20条）
-            recent_reports = []
-            for account, report_queue in reports.items():
-                for report in list(report_queue)[-10:]:  # 每个账户最近10条
-                    recent_reports.append({
-                        'account': account,
-                        'cmd_id': report.get('cmd_id', ''),
-                        'ok': report.get('ok', False),
-                        'timestamp': report.get('timestamp', 0),
-                    })
-            recent_reports = sorted(recent_reports, key=lambda x: x.get('timestamp', 0), reverse=True)[:20]
-        
-        return safe_json_response(ok=True, data={
-            'queues': queue_info,
-            'recent_commands': recent_commands,
-            'recent_reports': recent_reports,
-            'total_accounts': len(command_queues),
-            'total_command_states': len(command_states),
-        })
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[Debug Queues] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
-
-
-@app.route('/web/api/echo', methods=['GET', 'POST'])
-def echo():
-    """
-    调试接口：原样回显 MT4 / 其他客户端发送的内容
-    用于确认：
-    - 实际 HTTP 方法
-    - 实际 Header
-    - 实际原始 body（包括 data_size 是否为 0）
-    """
-    try:
-        # 为了完全符合你的调试需求，这里不做任何 JSON 解析，只是原样返回
-        raw_body = request.get_data()  # bytes
-        # 为了方便在浏览器 / 日志里看，再给一份 UTF-8 文本版本
-        try:
-            raw_text = raw_body.decode('utf-8', errors='replace')
-        except Exception:
-            raw_text = ""
-        
-        # 打印完整调试信息到控制台
-        print("=== /web/api/echo 调试请求 ===")
-        print(f"Path   : {request.path}")
-        print(f"Method : {request.method}")
-        print(f"Headers: {dict(request.headers)}")
-        print(f"Body   : {raw_text[:500]}")
-        print("=== /web/api/echo 结束 ===")
-        
-        resp = jsonify({
-            "ok": True,
-            "method": request.method,
-            "path": request.path,
-            "headers": dict(request.headers),
-            "body_bytes_len": len(raw_body),
-            "body_preview": raw_text[:500],
-        })
-        resp.headers['Content-Type'] = 'application/json'
-        return resp
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        error_type = e.__class__.__name__
-        traceback_str = traceback.format_exc()
-        print(f"[Echo] Error: {error_type}: {error_msg}")
-        print(traceback_str)
-        return safe_json_response(ok=False, error=error_msg, trace=error_type)
-
-# ==================== 可视化页面 ====================
-
-HTML_TEMPLATE = '''
+# ==================== HTML模板 ====================
+HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>MT4 量化交易系统 - 可视化追踪</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT4 远程交易执行面板 · 专业版</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Arial, sans-serif;
-            background: #1a1a1a;
-            color: #e0e0e0;
-            padding: 20px;
-        }
-        .container { max-width: 1600px; margin: 0 auto; }
-        h1 { color: #4CAF50; margin-bottom: 20px; }
-        h2 { color: #2196F3; margin: 20px 0 10px; font-size: 18px; }
-        .panel {
-            background: #2a2a2a;
-            border: 1px solid #444;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 20px;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-        .stat-item {
-            background: #333;
-            padding: 12px;
-            border-radius: 6px;
-            border-left: 4px solid #4CAF50;
-        }
-        .stat-label { font-size: 12px; color: #aaa; }
-        .stat-value { font-size: 24px; font-weight: bold; color: #4CAF50; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-        th, td {
-            padding: 8px;
-            text-align: left;
-            border-bottom: 1px solid #444;
-        }
-        th {
-            background: #333;
-            color: #4CAF50;
-            position: sticky;
-            top: 0;
-        }
-        tr:hover { background: #333; }
-        .state-QUEUED { color: #FFC107; }
-        .state-DELIVERED { color: #2196F3; }
-        .state-EXECUTED { color: #4CAF50; }
-        .state-REPORTED { color: #4CAF50; }
-        .state-EXPIRED { color: #f44336; }
-        .state-INVALID_REPORT { color: #f44336; background: #3a1a1a; }
-        .ok-true { color: #4CAF50; }
-        .ok-false { color: #f44336; }
-        .command-form {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        input, select, button {
-            padding: 8px;
-            border: 1px solid #555;
-            border-radius: 4px;
-            background: #333;
-            color: #e0e0e0;
-        }
-        button {
-            background: #4CAF50;
-            color: white;
-            cursor: pointer;
-            font-weight: bold;
-        }
-        button:hover { background: #45a049; }
-        .error { color: #f44336; }
-        .success { color: #4CAF50; }
-        .auto-refresh { margin: 10px 0; }
-        .auto-refresh label { margin-right: 10px; }
+        body { padding-top: 20px; background-color: #f0f2f5; }
+        .card-header { font-weight: 600; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+        .stat-item { background: #f8f9fa; border-radius: 8px; padding: 10px 12px; border-left: 4px solid #0d6efd; }
+        .stat-label { font-size: 0.8rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-value { font-size: 1.2rem; font-weight: 600; font-family: 'Courier New', monospace; }
+        .history-table td { font-size: 0.85rem; vertical-align: middle; }
+        .badge-ip { font-family: monospace; background: #e9ecef; color: #000; padding: 3px 6px; border-radius: 4px; }
+        .command-item { background: #e9ecef; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
+        .info-box { background: #d1e7ff; border-radius: 8px; padding: 12px; margin-bottom: 15px; border-left: 5px solid #0a58ca; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🚀 MT4 量化交易系统 - 可视化追踪面板</h1>
+        <h1 class="mb-3"><i class="bi bi-cpu"></i> MT4 远程交易执行 · 专业监控</h1>
         
-        <div class="panel">
-            <div class="auto-refresh">
-                <label>
-                    <input type="checkbox" id="autoRefresh" checked>
-                    自动刷新 (1秒)
-                </label>
-                <label>
-                    账户: <input type="text" id="accountInput" value="833711" style="width: 100px;">
-                </label>
-                <button onclick="loadData()">手动刷新</button>
+        <div class="info-box d-flex justify-content-between align-items-center">
+            <div>
+                <i class="bi bi-info-circle-fill me-2"></i>
+                <strong>MT4上报接口：</strong> <code>POST /web/api/echo</code> 
+                <span class="badge bg-secondary ms-2">等待指令返回</span>
+                <span class="ms-3"><i class="bi bi-arrow-return-right"></i> 响应格式：纯文本，每行一条指令，无指令返回 <code>NOCOMMAND</code></span>
+            </div>
+            <span class="text-muted small">队列指令将在下次上报时被取走</span>
+        </div>
+
+        <!-- 最新上报详细数据卡片 -->
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white bg-gradient">
+                <i class="bi bi-graph-up-arrow"></i> 最新账户状态
+            </div>
+            <div class="card-body">
+                {% if latest %}
+                    {% if latest.error %}
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle"></i> {{ latest.error }}
+                            <br><small>原始数据预览：{{ latest.body_raw_preview }}</small>
+                            {% if latest.full_error %}
+                            <pre class="mt-2 bg-light p-2 rounded" style="font-size:0.75rem;">{{ latest.full_error }}</pre>
+                            {% endif %}
+                            {% if latest.remaining_data %}
+                            <div class="mt-2 alert alert-info">
+                                <strong>检测到额外数据（可能为多个JSON）：</strong>
+                                <pre class="mb-0" style="font-size:0.75rem;">{{ latest.remaining_data }}</pre>
+                            </div>
+                            {% endif %}
+                        </div>
+                    {% else %}
+                        <div class="stat-grid">
+                            <div class="stat-item"><span class="stat-label">账户</span><div class="stat-value">{{ latest.account or 'N/A' }}</div></div>
+                            <div class="stat-item"><span class="stat-label">服务器</span><div class="stat-value">{{ latest.server or 'N/A' }}</div></div>
+                            <div class="stat-item"><span class="stat-label">时间戳(ts)</span><div class="stat-value">{{ latest.ts or 'N/A' }}</div></div>
+                            <div class="stat-item"><span class="stat-label">余额</span><div class="stat-value">{{ "%.2f"|format(latest.balance) if latest.balance is number else latest.balance }}</div></div>
+                            <div class="stat-item"><span class="stat-label">净值</span><div class="stat-value">{{ "%.2f"|format(latest.equity) if latest.equity is number else latest.equity }}</div></div>
+                            <div class="stat-item"><span class="stat-label">已用预付款</span><div class="stat-value">{{ "%.2f"|format(latest.margin) if latest.margin is number else latest.margin }}</div></div>
+                            <div class="stat-item"><span class="stat-label">可用预付款</span><div class="stat-value">{{ "%.2f"|format(latest.free_margin) if latest.free_margin is number else latest.free_margin }}</div></div>
+                            <div class="stat-item"><span class="stat-label">预付款比例</span><div class="stat-value">{{ "%.2f"|format(latest.margin_level) if latest.margin_level is number else latest.margin_level }}%</div></div>
+                            <div class="stat-item"><span class="stat-label">浮动盈亏</span><div class="stat-value">{{ "%.2f"|format(latest.floating_pnl) if latest.floating_pnl is number else latest.floating_pnl }}</div></div>
+                            <div class="stat-item"><span class="stat-label">日初始净值</span><div class="stat-value">{{ "%.2f"|format(latest.day_start_equity) if latest.day_start_equity is number else latest.day_start_equity }}</div></div>
+                            <div class="stat-item"><span class="stat-label">日盈亏</span><div class="stat-value">{{ "%.2f"|format(latest.daily_pnl) if latest.daily_pnl is number else latest.daily_pnl }}</div></div>
+                            <div class="stat-item"><span class="stat-label">日盈亏率</span><div class="stat-value">{{ "%.5f"|format(latest.daily_return) if latest.daily_return is number else latest.daily_return }}</div></div>
+                            <div class="stat-item"><span class="stat-label">网络延迟(ms)</span><div class="stat-value">{{ "%.0f"|format(latest.poll_latency_ms) if latest.poll_latency_ms is number else latest.poll_latency_ms }}</div></div>
+                            <div class="stat-item"><span class="stat-label">上次HTTP代码</span><div class="stat-value">{{ latest.last_http_code or 'N/A' }}</div></div>
+                            {% if latest.last_error %}
+                            <div class="stat-item"><span class="stat-label">错误信息</span><div class="stat-value text-danger">{{ latest.last_error }}</div></div>
+                            {% endif %}
+                        </div>
+
+                        <!-- 持仓列表（如果有） -->
+                        {% if latest.positions %}
+                        <div class="mt-4">
+                            <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#positionsCollapse" aria-expanded="false">
+                                <i class="bi bi-list-ul"></i> 显示持仓 ({{ latest.positions|length }})
+                            </button>
+                            <div class="collapse mt-2" id="positionsCollapse">
+                                <div class="card card-body p-0">
+                                    <table class="table table-sm table-striped mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>订单号</th>
+                                                <th>品种</th>
+                                                <th>类型</th>
+                                                <th>手数</th>
+                                                <th>开仓价</th>
+                                                <th>止损</th>
+                                                <th>止盈</th>
+                                                <th>开仓时间</th>
+                                                <th>利润</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for pos in latest.positions %}
+                                            <tr>
+                                                <td>{{ pos.ticket }}</td>
+                                                <td>{{ pos.symbol }}</td>
+                                                <td>{{ pos.type }}</td>
+                                                <td>{{ pos.lots }}</td>
+                                                <td>{{ pos.open_price }}</td>
+                                                <td>{{ pos.sl }}</td>
+                                                <td>{{ pos.tp }}</td>
+                                                <td>{{ pos.open_time_str }}</td>
+                                                <td>{{ "%.2f"|format(pos.profit) if pos.profit is number else pos.profit }}</td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        <!-- 如果有剩余数据，提示 -->
+                        {% if latest.remaining_data %}
+                        <div class="mt-3 alert alert-info">
+                            <strong>检测到额外数据（可能为多个JSON）：</strong>
+                            <pre class="mb-0" style="font-size:0.75rem;">{{ latest.remaining_data }}</pre>
+                        </div>
+                        {% endif %}
+
+                    {% endif %}
+                    <div class="mt-3">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#rawJsonPreview" aria-expanded="false">
+                            <i class="bi bi-code-slash"></i> 查看原始JSON
+                        </button>
+                        <div class="collapse mt-2" id="rawJsonPreview">
+                            <pre class="bg-light p-3 rounded" style="font-size:0.75rem;">{{ latest_raw.body_raw if latest_raw else '无原始数据' }}</pre>
+                        </div>
+                    </div>
+                {% else %}
+                    <p class="text-muted"><i class="bi bi-exclamation-circle"></i> 尚未收到任何MT4上报数据，请等待终端上报或使用curl测试。</p>
+                {% endif %}
             </div>
         </div>
-        
-        <div class="panel">
-            <h2>📊 统计面板</h2>
-            <div class="stats-grid" id="statsGrid"></div>
-        </div>
-        
-        <div class="panel">
-            <h2>💰 账户状态</h2>
-            <div id="accountStatus"></div>
-        </div>
-        
-        <div class="panel">
-            <h2>📝 命令下发表单</h2>
-            <div class="command-form">
-                <select id="actionSelect">
-                    <option value="MARKET">MARKET - 市价单</option>
-                    <option value="LIMIT">LIMIT - 限价单</option>
-                    <option value="CLOSE">CLOSE - 平仓</option>
-                    <option value="QUOTE">QUOTE - 询价</option>
-                </select>
-                <input type="text" id="symbolInput" placeholder="Symbol (EURUSD)" value="EURUSD">
-                <input type="text" id="sideInput" placeholder="Side (BUY/SELL)" value="BUY">
-                <input type="number" id="volumeInput" placeholder="Volume (0.01)" step="0.01" value="0.01">
-                <input type="number" id="riskPctInput" placeholder="Risk % (0.02)" step="0.01" value="0.02">
-                <input type="number" id="slPointsInput" placeholder="SL Points (200)" value="200">
-                <input type="number" id="tpPointsInput" placeholder="TP Points (300)" value="300">
-                <input type="number" id="maxSpreadInput" placeholder="Max Spread (15)" value="15">
-                <input type="number" id="ticketInput" placeholder="Ticket (for CLOSE)" value="">
-                <button onclick="sendCommand()">发送命令</button>
+
+        <!-- 两列布局：左侧历史记录，右侧指令管理 -->
+        <div class="row">
+            <div class="col-lg-7 mb-4">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header bg-secondary text-white">
+                        <i class="bi bi-clock-history"></i> 最近上报历史 ({{ history|length }}/{{ MAX_HISTORY }})
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover history-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>时间</th>
+                                        <th>账户</th>
+                                        <th>余额</th>
+                                        <th>净值</th>
+                                        <th>浮动盈亏</th>
+                                        <th>IP</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for rec in history %}
+                                    <tr>
+                                        <td>{{ rec.received_at.split(' ')[1] }}</td>
+                                        <td>{{ rec.account or '-' }}</td>
+                                        <td>{{ "%.2f"|format(rec.balance) if rec.balance is number else rec.balance }}</td>
+                                        <td>{{ "%.2f"|format(rec.equity) if rec.equity is number else rec.equity }}</td>
+                                        <td>{{ "%.2f"|format(rec.floating_pnl) if rec.floating_pnl is number else rec.floating_pnl }}</td>
+                                        <td><span class="badge-ip">{{ rec.ip }}</span></td>
+                                        <td>
+                                            <button class="btn btn-sm btn-outline-info" type="button" 
+                                                    data-bs-toggle="collapse" data-bs-target="#raw-{{ loop.index }}" 
+                                                    aria-expanded="false"><i class="bi bi-eye"></i></button>
+                                            <div class="collapse mt-1" id="raw-{{ loop.index }}">
+                                                <div class="card card-body p-2">
+                                                    <small>{{ rec.body_raw }}</small>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="7" class="text-center text-muted">暂无历史数据</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div id="commandResult"></div>
-        </div>
-        
-        <div class="panel">
-            <h2>🔄 命令生命周期追踪表</h2>
-            <div style="overflow-x: auto; max-height: 500px;">
-                <table id="commandsTable">
-                    <thead>
-                        <tr>
-                            <th>时间</th>
-                            <th>cmd_id</th>
-                            <th>nonce</th>
-                            <th>action</th>
-                            <th>symbol</th>
-                            <th>state</th>
-                            <th>ok</th>
-                            <th>message</th>
-                            <th>ticket</th>
-                            <th>latency_ms</th>
-                        </tr>
-                    </thead>
-                    <tbody id="commandsBody"></tbody>
-                </table>
-            </div>
-        </div>
-        
-        <div class="panel">
-            <h2>📈 持仓表格</h2>
-            <div style="overflow-x: auto;">
-                <table id="positionsTable">
-                    <thead>
-                        <tr>
-                            <th>Ticket</th>
-                            <th>Symbol</th>
-                            <th>Type</th>
-                            <th>Lots</th>
-                            <th>Open Price</th>
-                            <th>SL</th>
-                            <th>TP</th>
-                            <th>Profit</th>
-                        </tr>
-                    </thead>
-                    <tbody id="positionsBody"></tbody>
-                </table>
-            </div>
-        </div>
-        
-        <div class="panel">
-            <h2>💹 报价表格</h2>
-            <div style="overflow-x: auto;">
-                <table id="quotesTable">
-                    <thead>
-                        <tr>
-                            <th>Symbol</th>
-                            <th>Bid</th>
-                            <th>Ask</th>
-                            <th>Spread</th>
-                            <th>Time</th>
-                        </tr>
-                    </thead>
-                    <tbody id="quotesBody"></tbody>
-                </table>
+
+            <div class="col-lg-5 mb-4">
+                <div class="card shadow-sm mb-4">
+                    <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-list-check"></i> 待发送指令队列 ({{ commands|length }})</span>
+                        <form method="post" action="{{ url_for('clear_commands') }}" style="display:inline;">
+                            <button type="submit" class="btn btn-sm btn-light" onclick="return confirm('确定清空所有指令？')"><i class="bi bi-trash"></i> 清空</button>
+                        </form>
+                    </div>
+                    <div class="card-body">
+                        {% if commands %}
+                            {% for cmd in commands %}
+                            <div class="command-item d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>{{ cmd.direction }}</strong> {{ cmd.symbol }}  {{ cmd.volume }} 手
+                                    {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
+                                    {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
+                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp }}</small>
+                                </div>
+                                <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')"><i class="bi bi-x"></i></button>
+                                </form>
+                            </div>
+                            {% endfor %}
+                        {% else %}
+                            <p class="text-muted mb-0"><i class="bi bi-inbox"></i> 队列为空，暂无待发指令。</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="card shadow-sm">
+                    <div class="card-header bg-warning">
+                        <i class="bi bi-pencil-square"></i> 下达新交易指令
+                    </div>
+                    <div class="card-body">
+                        <form method="post" action="{{ url_for('send_command') }}">
+                            <div class="mb-2">
+                                <label class="form-label">品种 <span class="text-muted">(如 EURUSD)</span></label>
+                                <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD" required>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">方向</label>
+                                <select name="direction" class="form-select form-select-sm" required>
+                                    <option value="BUY">买入 (BUY)</option>
+                                    <option value="SELL">卖出 (SELL)</option>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">手数</label>
+                                <input type="number" step="0.01" min="0.01" name="volume" class="form-control form-control-sm" value="0.1" required>
+                            </div>
+                            <div class="row">
+                                <div class="col mb-2">
+                                    <label class="form-label">止损 (SL)</label>
+                                    <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="可选">
+                                </div>
+                                <div class="col mb-2">
+                                    <label class="form-label">止盈 (TP)</label>
+                                    <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="可选">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100 mt-2"><i class="bi bi-send"></i> 加入指令队列</button>
+                        </form>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
-    
-    <script>
-        let autoRefreshInterval = null;
-        
-        function getAccount() {
-            return document.getElementById('accountInput').value || '833711';
-        }
-        
-        function formatTime(ts) {
-            if (!ts) return '-';
-            return new Date(ts * 1000).toLocaleTimeString();
-        }
-        
-        function formatDateTime(ts) {
-            if (!ts) return '-';
-            return new Date(ts * 1000).toLocaleString();
-        }
-        
-        async function loadData() {
-            const account = getAccount();
-            try {
-                const res = await fetch(`/web/api/data?account=${account}`);
-                
-                // 检查响应内容类型
-                const contentType = res.headers.get('content-type');
-                let data;
-                
-                if (contentType && contentType.includes('application/json')) {
-                    data = await res.json();
-                } else {
-                    // 如果不是JSON，读取文本内容
-                    const text = await res.text();
-                    console.error('非JSON响应:', text.substring(0, 200));
-                    throw new Error(`服务器返回非JSON响应 (HTTP ${res.status}): ${text.substring(0, 100)}`);
-                }
-                
-                // 更新统计面板
-                const stats = data.metrics;
-                document.getElementById('statsGrid').innerHTML = `
-                    <div class="stat-item">
-                        <div class="stat-label">队列长度</div>
-                        <div class="stat-value">${stats.queue_len}</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">总命令数</div>
-                        <div class="stat-value">${stats.total_commands}</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">去重命中</div>
-                        <div class="stat-value">${stats.dedupe_hits}</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">成功率 (1分钟)</div>
-                        <div class="stat-value">${stats.success_rate_1min}%</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">平均延迟</div>
-                        <div class="stat-value">${stats.avg_latency_ms}ms</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">错误数</div>
-                        <div class="stat-value">${stats.error_count}</div>
-                    </div>
-                `;
-                
-                // 更新账户状态
-                const status = data.status;
-                document.getElementById('accountStatus').innerHTML = status.account ? `
-                    <table>
-                        <tr><td>账户</td><td>${status.account}</td></tr>
-                        <tr><td>余额</td><td>${status.balance || '-'}</td></tr>
-                        <tr><td>净值</td><td>${status.equity || '-'}</td></tr>
-                        <tr><td>保证金</td><td>${status.margin || '-'}</td></tr>
-                        <tr><td>保证金水平</td><td>${status.margin_level || '-'}%</td></tr>
-                        <tr><td>当日PnL</td><td>${status.daily_pnl || '-'}</td></tr>
-                        <tr><td>当日收益率</td><td>${status.daily_return ? (status.daily_return * 100).toFixed(2) + '%' : '-'}</td></tr>
-                        <tr><td>杠杆使用</td><td>${status.leverage_used || '-'}</td></tr>
-                    </table>
-                ` : '<p>暂无账户状态数据</p>';
-                
-                // 更新命令表格
-                const tbody = document.getElementById('commandsBody');
-                tbody.innerHTML = data.commands.map(cmd => `
-                    <tr class="state-${cmd.state}">
-                        <td>${formatTime(cmd.created_at)}</td>
-                        <td>${cmd.cmd_id}</td>
-                        <td>-</td>
-                        <td>${cmd.action}</td>
-                        <td>${cmd.symbol}</td>
-                        <td class="state-${cmd.state}">${cmd.state}</td>
-                        <td class="ok-${cmd.ok}">${cmd.ok !== undefined ? (cmd.ok ? '✓' : '✗') : '-'}</td>
-                        <td>${cmd.message || cmd.error || '-'}</td>
-                        <td>${cmd.ticket || '-'}</td>
-                        <td>${cmd.latency_est_ms ? cmd.latency_est_ms.toFixed(0) : '-'}</td>
-                    </tr>
-                `).join('');
-                
-                // 更新持仓表格
-                const posBody = document.getElementById('positionsBody');
-                if (data.positions && data.positions.length > 0) {
-                    posBody.innerHTML = data.positions.map(pos => `
-                        <tr>
-                            <td>${pos.ticket}</td>
-                            <td>${pos.symbol}</td>
-                            <td>${pos.type}</td>
-                            <td>${pos.lots}</td>
-                            <td>${pos.open_price}</td>
-                            <td>${pos.sl || '-'}</td>
-                            <td>${pos.tp || '-'}</td>
-                            <td>${pos.profit || '-'}</td>
-                        </tr>
-                    `).join('');
-                } else {
-                    posBody.innerHTML = '<tr><td colspan="8">暂无持仓</td></tr>';
-                }
-                
-                // 更新报价表格
-                const quoteBody = document.getElementById('quotesBody');
-                if (data.quotes && data.quotes.length > 0) {
-                    const latestQuote = data.quotes[data.quotes.length - 1];
-                    if (latestQuote.quotes) {
-                        quoteBody.innerHTML = Object.entries(latestQuote.quotes).map(([sym, q]) => `
-                            <tr>
-                                <td>${sym}</td>
-                                <td>${q.bid}</td>
-                                <td>${q.ask}</td>
-                                <td>${q.spread_points || '-'}</td>
-                                <td>${formatTime(latestQuote.timestamp)}</td>
-                            </tr>
-                        `).join('');
-                    } else {
-                        quoteBody.innerHTML = '<tr><td colspan="5">暂无报价数据</td></tr>';
-                    }
-                } else {
-                    quoteBody.innerHTML = '<tr><td colspan="5">暂无报价数据</td></tr>';
-                }
-                
-            } catch (error) {
-                console.error('Load data error:', error);
-            }
-        }
-        
-        async function sendCommand() {
-            const account = getAccount();
-            const action = document.getElementById('actionSelect').value;
-            const symbol = document.getElementById('symbolInput').value;
-            const side = document.getElementById('sideInput').value;
-            const volume = parseFloat(document.getElementById('volumeInput').value);
-            const riskPct = parseFloat(document.getElementById('riskPctInput').value);
-            const slPoints = parseInt(document.getElementById('slPointsInput').value);
-            const tpPoints = parseInt(document.getElementById('tpPointsInput').value);
-            const maxSpread = parseInt(document.getElementById('maxSpreadInput').value);
-            const ticket = document.getElementById('ticketInput').value;
-            
-            const payload = {
-                account: account,
-                action: action,
-                ttl_sec: 10,
-            };
-            
-            if (action === 'MARKET') {
-                payload.symbol = symbol;
-                payload.side = side;
-                if (volume > 0) payload.volume = volume;
-                if (riskPct > 0) payload.risk_alloc_pct = riskPct;
-                if (slPoints > 0) payload.sl_points = slPoints;
-                if (tpPoints > 0) payload.tp_points = tpPoints;
-                if (maxSpread > 0) payload.max_spread_points = maxSpread;
-            } else if (action === 'LIMIT') {
-                payload.symbol = symbol;
-                payload.side = side;
-                payload.volume = volume;
-                payload.price = parseFloat(prompt('请输入限价价格:') || '0');
-            } else if (action === 'CLOSE') {
-                payload.ticket = parseInt(ticket);
-            } else if (action === 'QUOTE') {
-                payload.symbols = symbol.split(',').map(s => s.trim());
-            }
-            
-            try {
-                const res = await fetch('/web/api/command', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload),
-                });
-                
-                // 检查响应内容类型
-                const contentType = res.headers.get('content-type');
-                let result;
-                
-                if (contentType && contentType.includes('application/json')) {
-                    result = await res.json();
-                } else {
-                    // 如果不是JSON，读取文本内容
-                    const text = await res.text();
-                    console.error('非JSON响应:', text.substring(0, 200));
-                    throw new Error(`服务器返回非JSON响应 (HTTP ${res.status}): ${text.substring(0, 100)}`);
-                }
-                
-                const resultDiv = document.getElementById('commandResult');
-                if (res.ok && result.ok) {
-                    resultDiv.innerHTML = `<div class="success">✓ 命令已创建: ${result.id} (deduped: ${result.deduped})</div>`;
-                } else {
-                    const errorMsg = result.error || result.message || `HTTP ${res.status}`;
-                    resultDiv.innerHTML = `<div class="error">✗ 错误: ${errorMsg}</div>`;
-                }
-                
-                // 刷新数据
-                setTimeout(loadData, 500);
-            } catch (error) {
-                console.error('发送命令错误:', error);
-                const errorMsg = error.message || String(error);
-                document.getElementById('commandResult').innerHTML = `<div class="error">✗ 请求失败: ${errorMsg}</div>`;
-            }
-        }
-        
-        // 自动刷新
-        document.getElementById('autoRefresh').addEventListener('change', function(e) {
-            if (e.target.checked) {
-                autoRefreshInterval = setInterval(loadData, 1000);
-            } else {
-                if (autoRefreshInterval) clearInterval(autoRefreshInterval);
-            }
-        });
-        
-        // 初始加载
-        loadData();
-        if (document.getElementById('autoRefresh').checked) {
-            autoRefreshInterval = setInterval(loadData, 1000);
-        }
-    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
-'''
+"""
 
-# ==================== 展示页面（HTML，路径：/web 或 /）===================
-
-@app.route('/web', methods=['GET'])
-def web_page():
-    """可视化展示页面（HTML）"""
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/', methods=['GET'])
-def index():
-    """首页重定向到 /web"""
-    return render_template_string('<script>window.location.href="/web";</script>')
-
+# ==================== 启动 ====================
 if __name__ == '__main__':
-    print("=" * 60)
-    print("MT4 量化交易系统后端启动")
-    print("=" * 60)
-    print("展示页面: http://localhost:5000/web 或 http://localhost:5000/")
-    print("MT4 API: /web/api/mt4/... (仅JSON)")
-    print("前端API: /web/api/... (仅JSON)")
-    print("=" * 60)
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
