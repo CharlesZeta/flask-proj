@@ -21,12 +21,11 @@ positions = [
     }
 ]
 
-# 嵌入的 HTML 模板
+# 嵌入的 HTML 模板 (包含 CSS 和 JS)
 HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <!-- 1. Viewport 适配与移动端优先 -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -50,7 +49,7 @@ HTML_TEMPLATE = """<!doctype html>
       --safe-bottom: env(safe-area-inset-bottom);
     }
 
-    /* 2. CSS Reset (移动端优化) */
+    /* CSS Reset (移动端优化) */
     * { 
       box-sizing: border-box; 
       -webkit-tap-highlight-color: transparent; 
@@ -102,6 +101,7 @@ HTML_TEMPLATE = """<!doctype html>
       align-items: center;
       justify-content: center;
       font-size: 0.9375rem;
+      cursor: pointer;
     }
     /* 移除 hover-only，改为 active */
     .btn:active { background: var(--chip); }
@@ -128,6 +128,7 @@ HTML_TEMPLATE = """<!doctype html>
       font-size: 0.9375rem; /* 15px */
       min-height: 2.75rem; /* 44px */
       transition: 0.2s;
+      cursor: pointer;
     }
     .tab.active { background: var(--card); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
 
@@ -144,6 +145,7 @@ HTML_TEMPLATE = """<!doctype html>
       font-size: 0.875rem; padding: 0.25rem 0.5rem; 
       border-radius: 0.375rem; background: var(--text); color: #fff; 
       font-weight: 700; min-height: 2rem; display: inline-flex; align-items: center;
+      cursor: pointer;
     }
     .symRight { display: flex; align-items: center; }
     .iconBtn.huge-chart { 
@@ -151,6 +153,7 @@ HTML_TEMPLATE = """<!doctype html>
       border: 2px solid var(--line); background: #fff; 
       display: grid; place-items: center; font-size: 2.25rem; 
       box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: 0.2s; 
+      cursor: pointer;
     }
     .iconBtn.huge-chart:active { transform: scale(0.95); }
 
@@ -188,6 +191,7 @@ HTML_TEMPLATE = """<!doctype html>
       padding: 0.5rem 0.75rem; border-radius: 0.5rem; background: var(--chip); 
       font-weight: 700; font-size: 0.875rem; border: 1px solid transparent; 
       min-height: 2rem; display: inline-flex; align-items: center;
+      cursor: pointer;
     }
     .chip.primary { background: var(--text); color: #fff; }
     
@@ -196,6 +200,7 @@ HTML_TEMPLATE = """<!doctype html>
       background: var(--chip); border-radius: 0.625rem; padding: 0.875rem 1rem; 
       margin-bottom: 0.75rem; border: 1px solid transparent; transition: 0.2s; 
       min-height: 3.5rem; /* 56px touch target */
+      cursor: pointer;
     }
     .form-row:focus-within { background: #fff; border-color: var(--text); }
     .form-row label { color: var(--muted); font-weight: 600; font-size: 0.875rem; white-space: nowrap; }
@@ -209,7 +214,7 @@ HTML_TEMPLATE = """<!doctype html>
     /* 滑块 */
     .range-wrap { margin: 1.25rem 0 1.5rem; padding: 0; }
     .range-header { display: flex; justify-content: space-between; margin-bottom: 0.75rem; font-size: 0.875rem; font-weight: 700; color: var(--muted); align-items: center;}
-    input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; padding: 0.625rem 0; margin: 0; min-height: 2.75rem; } /* 44px */
+    input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; padding: 0.625rem 0; margin: 0; min-height: 2.75rem; cursor: pointer; } /* 44px */
     input[type=range]:focus { outline: none; }
     input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 0.375rem; background: linear-gradient(to right, var(--text) 0%, var(--text) var(--track-fill, 10%), var(--line) var(--track-fill, 10%), var(--line) 100%); border-radius: 3px; }
     input[type=range]::-webkit-slider-thumb { height: 1.5rem; width: 1.5rem; border-radius: 50%; background: #fff; border: 4px solid var(--text); -webkit-appearance: none; margin-top: -0.5625rem; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
@@ -222,6 +227,7 @@ HTML_TEMPLATE = """<!doctype html>
       transition: transform 0.1s; 
       min-height: 3.5rem; /* 56px */
       display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
     }
     .cta:active { transform: scale(0.98); }
     .cta.buy { background: var(--green); }
@@ -233,6 +239,7 @@ HTML_TEMPLATE = """<!doctype html>
     .seg { 
       padding: 0.75rem 0.25rem; color: var(--muted); font-weight: 700; font-size: 1rem; 
       position: relative; min-height: 2.75rem; display: flex; align-items: center;
+      cursor: pointer;
     }
     .seg.active { color: var(--text); }
     .seg.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--text); }
@@ -253,6 +260,7 @@ HTML_TEMPLATE = """<!doctype html>
       border-radius: 0.5rem; padding: 0.625rem; font-weight: 700; 
       min-height: 2.75rem; display: flex; align-items: center; justify-content: center;
       transition: 0.2s; 
+      cursor: pointer;
     }
     .ghost:active { background: var(--chip); }
 
@@ -278,6 +286,7 @@ HTML_TEMPLATE = """<!doctype html>
     .select-item { 
       padding: 1rem; border-bottom: 1px solid var(--line); font-weight: 700; 
       display: flex; justify-content: space-between; align-items: center; min-height: 3.5rem;
+      cursor: pointer;
     }
     .select-item:last-child { border-bottom: none; }
     .select-item:active { background: var(--chip); }
@@ -323,6 +332,7 @@ HTML_TEMPLATE = """<!doctype html>
       flex: 1; padding: 0.75rem; border: 1px solid var(--line); border-radius: 0.625rem; 
       text-align: center; font-weight: 700; transition: 0.2s; background: var(--chip); 
       min-height: 3rem; display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
     }
     .quiz-opt.selected { background: var(--text); color: #fff; border-color: var(--text); }
 
@@ -350,6 +360,7 @@ HTML_TEMPLATE = """<!doctype html>
       background: linear-gradient(135deg, #1f2937, #374151); color: #fff; border: none; 
       padding: 0.875rem 2rem; border-radius: 0.75rem; font-size: 1rem; font-weight: 700; 
       width: 100%; min-height: 3rem;
+      cursor: pointer;
     }
 
     /* 4. 图片视频资源优化 (CSS层) */
@@ -361,6 +372,7 @@ HTML_TEMPLATE = """<!doctype html>
       padding: 1rem; border-radius: 0.75rem; font-size: 1rem; font-weight: 800; 
       width: 100%; box-shadow: 0 0.25rem 0.75rem rgba(246,70,93,0.3); margin-top: 0.625rem; 
       min-height: 3.5rem;
+      cursor: pointer;
     }
   </style>
 </head>
@@ -374,87 +386,6 @@ HTML_TEMPLATE = """<!doctype html>
       <button class="error-popup-btn" onclick="$('errorPopup').classList.remove('show')">我知道了</button>
     </div>
   </div>
-
-  <!-- 模拟 API -->
-  <script>
-    const API = {
-      // 1. 发送下单指令
-      submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
-        console.log("【API】执行下单:", {symbol, side, type, marginPct, leverage, calculatedLots, ...params});
-        
-        try {
-          const response = await fetch('/api/v1/order', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              symbol,
-              side,
-              type,
-              marginPct,
-              leverage,
-              lots: calculatedLots,
-              ...params
-            })
-          });
-          const data = await response.json();
-          return data;
-        } catch (error) {
-          console.error("下单失败:", error);
-          alert("网络请求失败，请检查连接");
-          return { success: false };
-        }
-      },
-      
-      // 2. 修改持仓订单 (分批止盈止损)
-      modifyPosition: async function(positionId, tpPrice, tpLots, slPrice, slLots) {
-        console.log("【API】修改持仓:", {positionId, tpPrice, tpLots, slPrice, slLots});
-        
-        try {
-          const response = await fetch('/api/v1/position/modify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ positionId, tpPrice, tpLots, slPrice, slLots })
-          });
-          return await response.json();
-        } catch (error) {
-          console.error("修改持仓失败:", error);
-          return { success: false };
-        }
-      },
-      
-      // 3. 锁仓接口
-      lockPosition: async function(positionId) {
-        console.log("【API】一键锁仓:", {positionId});
-        
-        try {
-          const response = await fetch('/api/v1/position/lock', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ positionId })
-          });
-          return await response.json();
-        } catch (error) {
-          console.error("锁仓失败:", error);
-          return { success: false };
-        }
-      },
-      
-      // 4. 获取历史日历盈亏数据
-      getCalendarPnL: async function(year, month) {
-        console.log("【API】获取日历数据:", year, month);
-        
-        try {
-          const response = await fetch(`/api/v1/calendar?year=${year}&month=${month}`);
-          return await response.json();
-        } catch (error) {
-          console.error("获取日历失败:", error);
-          return {};
-        }
-      }
-    };
-  </script>
 
   <div class="app">
     <div class="topbar">
@@ -714,13 +645,15 @@ HTML_TEMPLATE = """<!doctype html>
   </div>
 
   <script>
+    // 全局选择器辅助函数
     const $ = id => document.getElementById(id);
 
     // 6. 消除 300ms 点击延迟 (虽然 Viewport 已解决，但保留 touch-action 以防万一)
     // 此外使用 passive event listeners 优化滚动性能
     document.addEventListener('touchstart', function(){}, {passive: true});
 
-    const quantState = {
+    // 暴露全局状态
+    window.quantState = {
       equity: 10125.50,         
       availMargin: 9540.20,
       price: 2345.50,           
@@ -735,20 +668,101 @@ HTML_TEMPLATE = """<!doctype html>
 
     let quizAnswers = {};
 
-    function updateCalculations() {
-      const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = quantState;
+    // 暴露全局 API
+    window.API = {
+      // 1. 发送下单指令
+      submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
+        console.log("【API】执行下单:", {symbol, side, type, marginPct, leverage, calculatedLots, ...params});
+        
+        try {
+          const response = await fetch('/api/v1/order', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              symbol,
+              side,
+              type,
+              marginPct,
+              leverage,
+              lots: calculatedLots,
+              ...params
+            })
+          });
+          const data = await response.json();
+          return data;
+        } catch (error) {
+          console.error("下单失败:", error);
+          alert("网络请求失败，请检查连接");
+          return { success: false };
+        }
+      },
+      
+      // 2. 修改持仓订单 (分批止盈止损)
+      modifyPosition: async function(positionId, tpPrice, tpLots, slPrice, slLots) {
+        console.log("【API】修改持仓:", {positionId, tpPrice, tpLots, slPrice, slLots});
+        
+        try {
+          const response = await fetch('/api/v1/position/modify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ positionId, tpPrice, tpLots, slPrice, slLots })
+          });
+          return await response.json();
+        } catch (error) {
+          console.error("修改持仓失败:", error);
+          return { success: false };
+        }
+      },
+      
+      // 3. 锁仓接口
+      lockPosition: async function(positionId) {
+        console.log("【API】一键锁仓:", {positionId});
+        
+        try {
+          const response = await fetch('/api/v1/position/lock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ positionId })
+          });
+          return await response.json();
+        } catch (error) {
+          console.error("锁仓失败:", error);
+          return { success: false };
+        }
+      },
+      
+      // 4. 获取历史日历盈亏数据
+      getCalendarPnL: async function(year, month) {
+        console.log("【API】获取日历数据:", year, month);
+        
+        try {
+          const response = await fetch(`/api/v1/calendar?year=${year}&month=${month}`);
+          return await response.json();
+        } catch (error) {
+          console.error("获取日历失败:", error);
+          return {};
+        }
+      }
+    };
+
+    // 暴露全局函数供 HTML 调用
+    window.updateCalculations = function() {
+      const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = window.quantState;
       const usedMargin = availMargin * (marginPct / 100);
       const notional = usedMargin * leverage;
       let calculatedLots = notional / (contractSize * price);
       calculatedLots = Math.floor(calculatedLots * 100) / 100; 
       
-      quantState.lots = calculatedLots;
+      window.quantState.lots = calculatedLots;
 
       $('pctText').innerText = marginPct;
       $('lotsText').innerText = calculatedLots.toFixed(2);
 
       [2, 3, 5, 8, 10].forEach(pct => {
-        $(`sl_${pct}`).innerText = (notional * (pct / 100)).toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
+        const el = $(`sl_${pct}`);
+        if(el) el.innerText = (notional * (pct / 100)).toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       });
 
       const perPointMoney = calculatedLots * contractSize * pointSize;
@@ -757,10 +771,10 @@ HTML_TEMPLATE = """<!doctype html>
       $('calcMargin').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       $('calcPpVal').innerText = perPointMoney.toFixed(2) + " USD";
       $('calcLiq').innerText = calculatedLots > 0 ? liqPrice.toLocaleString('en-US', {minimumFractionDigits:2}) : "0.00";
-    }
+    };
 
-    function setOrderType(typeCode, typeName) {
-      quantState.orderType = typeCode;
+    window.setOrderType = function(typeCode, typeName) {
+      window.quantState.orderType = typeCode;
       $('orderTypeText').innerText = typeName;
       $('orderTypeMask').style.display = 'none';
       
@@ -783,9 +797,9 @@ HTML_TEMPLATE = """<!doctype html>
       
       html += renderInput('有效时间 (分钟)', '输入过期分钟数');
       area.innerHTML = html;
-    }
+    };
 
-    function validateFormInputs() {
+    window.validateFormInputs = function() {
       const area = $('dynamicFormArea');
       const inputs = area.querySelectorAll('input');
       const labels = area.querySelectorAll('label');
@@ -801,10 +815,10 @@ HTML_TEMPLATE = """<!doctype html>
         }
       });
       return errors;
-    }
+    };
 
-    function initiateOrder(side) {
-      const validationErrors = validateFormInputs();
+    window.initiateOrder = function(side) {
+      const validationErrors = window.validateFormInputs();
       if (validationErrors.length > 0) {
         const errorList = $('errorPopupList');
         errorList.innerHTML = validationErrors.map(err => `<div class="error-popup-item">${err}</div>`).join('');
@@ -812,45 +826,45 @@ HTML_TEMPLATE = """<!doctype html>
         return;
       }
 
-      quantState.pendingSide = side;
+      window.quantState.pendingSide = side;
       quizAnswers = {};
       document.querySelectorAll('.quiz-opt').forEach(el => el.classList.remove('selected'));
       $('quizMask').style.display = 'flex';
-    }
+    };
 
-    function selectQuiz(el, qIndex, answer) {
+    window.selectQuiz = function(el, qIndex, answer) {
       const parent = el.parentElement;
       parent.querySelectorAll('.quiz-opt').forEach(opt => opt.classList.remove('selected'));
       el.classList.add('selected');
       quizAnswers[qIndex] = answer;
-    }
+    };
 
-    function confirmOrderAfterQuiz() {
+    window.confirmOrderAfterQuiz = function() {
       if(Object.keys(quizAnswers).length < 3) return alert('请先完成所有风控自检题！');
       $('quizMask').style.display = 'none';
-      const formData = getFormInputs();
+      const formData = window.getFormInputs();
       
-      API.submitOrder(
+      window.API.submitOrder(
         $('symName').innerText, 
-        quantState.pendingSide, 
-        quantState.orderType, 
-        quantState.marginPct, 
-        quantState.leverage, 
-        quantState.lots,
+        window.quantState.pendingSide, 
+        window.quantState.orderType, 
+        window.quantState.marginPct, 
+        window.quantState.leverage, 
+        window.quantState.lots,
         { quiz: quizAnswers, ...formData }
       ).then(() => {
-        addToPendingOrders(
+        window.addToPendingOrders(
           $('symName').innerText,
-          quantState.pendingSide,
-          quantState.orderType,
-          quantState.lots,
+          window.quantState.pendingSide,
+          window.quantState.orderType,
+          window.quantState.lots,
           formData
         );
-        alert(`指令发送成功！\n类型：${quantState.orderType}\n方向：${quantState.pendingSide}\n计算出对应手数：${quantState.lots.toFixed(2)}手`);
+        alert(`指令发送成功！\\n类型：${window.quantState.orderType}\\n方向：${window.quantState.pendingSide}\\n计算出对应手数：${window.quantState.lots.toFixed(2)}手`);
       });
-    }
+    };
 
-    function getFormInputs() {
+    window.getFormInputs = function() {
       const area = $('dynamicFormArea');
       const inputs = area.querySelectorAll('input');
       const data = {};
@@ -860,9 +874,9 @@ HTML_TEMPLATE = """<!doctype html>
         data[label] = input.value;
       });
       return data;
-    }
+    };
 
-    function addToPendingOrders(symbol, side, type, lots, formData) {
+    window.addToPendingOrders = function(symbol, side, type, lots, formData) {
       const ordersList = $('list-orders');
       if (ordersList.querySelector('.posItem') && ordersList.querySelector('.posItem').innerText.includes('暂无')) {
         ordersList.innerHTML = '';
@@ -892,8 +906,8 @@ HTML_TEMPLATE = """<!doctype html>
           </div>
           <div class="posGrid">
             <div><div class="mini">交易手数</div><div class="big">${lots.toFixed(2)}</div></div>
-            <div><div class="mini">仓位占比</div><div class="big">${quantState.marginPct}%</div></div>
-            <div><div class="mini">杠杆</div><div class="big">1:${quantState.leverage}</div></div>
+            <div><div class="mini">仓位占比</div><div class="big">${window.quantState.marginPct}%</div></div>
+            <div><div class="mini">杠杆</div><div class="big">1:${window.quantState.leverage}</div></div>
             ${formInfo}
           </div>
           <div class="posActions">
@@ -902,17 +916,18 @@ HTML_TEMPLATE = """<!doctype html>
         </div>
       `;
       ordersList.insertAdjacentHTML('beforeend', orderHTML);
-      updateOrdersCount();
-    }
+      window.updateOrdersCount();
+    };
 
-    function updateOrdersCount() {
+    window.updateOrdersCount = function() {
       const ordersList = $('list-orders');
       const orderItems = ordersList.querySelectorAll('.posItem');
       const count = orderItems.length;
-      document.querySelectorAll('.segTabs .seg')[1].innerHTML = `当前委托 (${count})`;
-    }
+      const tab = document.querySelectorAll('.segTabs .seg')[1];
+      if(tab) tab.innerHTML = `当前委托 (${count})`;
+    };
 
-    function openModifyOrderPanel() {
+    window.openModifyOrderPanel = function() {
       const currentLots = parseFloat($('posLotsVal').innerText);
       const tpSlider = $('tpLotsSlider');
       const slSlider = $('slLotsSlider');
@@ -923,42 +938,42 @@ HTML_TEMPLATE = """<!doctype html>
       tpSlider.oninput = function() { $('tpLotsText').innerText = parseFloat(this.value).toFixed(2) + " 手"; }
       slSlider.oninput = function() { $('slLotsText').innerText = parseFloat(this.value).toFixed(2) + " 手"; }
       $('modifyMask').style.display = 'flex';
-    }
+    };
 
-    function submitModifyOrder() {
+    window.submitModifyOrder = function() {
       const tpP = $('modTpPrice').value; const tpL = $('tpLotsSlider').value;
       const slP = $('modSlPrice').value; const slL = $('slLotsSlider').value;
-      API.modifyPosition('MT4_8821', tpP, tpL, slP, slL).then(() => {
-        alert(`修改成功！\n止盈: ${tpL}手 @${tpP||'未设'}\n止损: ${slL}手 @${slP||'未设'}`);
+      window.API.modifyPosition('MT4_8821', tpP, tpL, slP, slL).then(() => {
+        alert(`修改成功！\\n止盈: ${tpL}手 @${tpP||'未设'}\\n止损: ${slL}手 @${slP||'未设'}`);
         $('modifyMask').style.display = 'none';
       });
-    }
+    };
 
-    function executeLockPosition() {
+    window.executeLockPosition = function() {
       const tpPrice = $('modTpPrice').value;
       const slPrice = $('modSlPrice').value;
       if (!tpPrice || tpPrice.trim() === '' || !slPrice || slPrice.trim() === '') {
-        alert('❌ 无法执行锁仓！\n\n原因：止盈价格和止损价格都必须填写才能进行锁仓操作。\n\n请先在下方设置止盈价和止损价。');
+        alert('❌ 无法执行锁仓！\\n\\n原因：止盈价格和止损价格都必须填写才能进行锁仓操作。\\n\\n请先在下方设置止盈价和止损价。');
         return;
       }
       if (confirm('警告：一键锁仓将开立相同手数的反向订单对冲，是否继续？')) {
-        API.lockPosition('MT4_8821').then(() => {
+        window.API.lockPosition('MT4_8821').then(() => {
           alert('锁仓指令已执行。');
           $('modifyMask').style.display = 'none';
         });
       }
-    }
+    };
 
-    function openCalendar() {
+    window.openCalendar = function() {
       $('calendarMask').style.display = 'flex';
-      renderCalendar();
-    }
+      window.renderCalendar();
+    };
 
-    async function renderCalendar() {
+    window.renderCalendar = async function() {
       const grid = $('calGrid');
       grid.innerHTML = '';
       for(let i=0; i<3; i++) grid.innerHTML += `<div class="cal-day empty"></div>`;
-      const data = await API.getCalendarPnL(2024, 5);
+      const data = await window.API.getCalendarPnL(2024, 5);
       for(let i=1; i<=31; i++) {
         let pnlStr = '';
         if(data[i]) {
@@ -974,49 +989,58 @@ HTML_TEMPLATE = """<!doctype html>
           </div>
         `;
       }
-    }
+    };
 
+    // 模拟数据流
     let lastDataTick = Date.now();
     setInterval(() => {
       if (Math.random() > 0.4) lastDataTick = Date.now();
       const diff = Date.now() - lastDataTick;
       const dot = $('latencySignal');
-      if (diff < 3000) { dot.className = 'signal-dot green'; dot.title = '延迟极低 (<3s)'; } 
-      else if (diff < 5000) { dot.className = 'signal-dot yellow'; dot.title = '网络波动 (3-5s)'; } 
-      else { dot.className = 'signal-dot red'; dot.title = '连接缓慢 (>5s)'; }
+      if(dot) {
+        if (diff < 3000) { dot.className = 'signal-dot green'; dot.title = '延迟极低 (<3s)'; } 
+        else if (diff < 5000) { dot.className = 'signal-dot yellow'; dot.title = '网络波动 (3-5s)'; } 
+        else { dot.className = 'signal-dot red'; dot.title = '连接缓慢 (>5s)'; }
+      }
     }, 1000);
 
     window.onload = () => {
-      setOrderType('limit_tpsl', '限价止盈止损');
+      window.setOrderType('limit_tpsl', '限价止盈止损');
       const marginSlider = $('marginSlider');
-      marginSlider.style.setProperty('--track-fill', marginSlider.value + '%');
-      marginSlider.oninput = function() {
-        quantState.marginPct = parseInt(this.value);
-        this.style.setProperty('--track-fill', this.value + '%');
-        updateCalculations();
-      };
+      if(marginSlider) {
+        marginSlider.style.setProperty('--track-fill', marginSlider.value + '%');
+        marginSlider.oninput = function() {
+          window.quantState.marginPct = parseInt(this.value);
+          this.style.setProperty('--track-fill', this.value + '%');
+          window.updateCalculations();
+        };
+      }
       const levSlider = $('levSlider');
-      levSlider.style.setProperty('--track-fill', (levSlider.value / levSlider.max * 100) + '%');
-      levSlider.oninput = function() {
-        quantState.leverage = parseInt(this.value);
-        this.style.setProperty('--track-fill', (this.value / this.max * 100) + '%');
-        $('levTextModal').innerText = quantState.leverage;
-        $('btnLev').innerText = `杠杆 ${quantState.leverage}x ▼`;
-        updateCalculations();
-      };
-      updateCalculations();
+      if(levSlider) {
+        levSlider.style.setProperty('--track-fill', (levSlider.value / levSlider.max * 100) + '%');
+        levSlider.oninput = function() {
+          window.quantState.leverage = parseInt(this.value);
+          this.style.setProperty('--track-fill', (this.value / this.max * 100) + '%');
+          $('levTextModal').innerText = window.quantState.leverage;
+          $('btnLev').innerText = `杠杆 ${window.quantState.leverage}x ▼`;
+          window.updateCalculations();
+        };
+      }
+      window.updateCalculations();
     };
 
-    function switchMainTab(el) { document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active')); el.classList.add('active'); }
-    function switchBottomTab(target) {
+    window.switchMainTab = function(el) { document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active')); el.classList.add('active'); };
+    window.switchBottomTab = function(target) {
       document.querySelectorAll('.segTabs .seg').forEach(el => el.classList.remove('active'));
       event.target.classList.add('active');
-      $('list-positions').classList.toggle('active', target === 'positions');
-      $('list-orders').classList.toggle('active', target === 'orders');
-    }
-    function closeModal(e, id) { if(e.target.id === id) $(id).style.display = 'none'; }
-    function closeErrorPopup(e) { if(e.target.id === 'errorPopup') $('errorPopup').classList.remove('show'); }
-    
+      const listPos = $('list-positions');
+      const listOrd = $('list-orders');
+      if(listPos) listPos.classList.toggle('active', target === 'positions');
+      if(listOrd) listOrd.classList.toggle('active', target === 'orders');
+    };
+    window.closeModal = function(e, id) { if(e.target.id === id) $(id).style.display = 'none'; };
+    window.closeErrorPopup = function(e) { if(e.target.id === 'errorPopup') $('errorPopup').classList.remove('show'); };
+
     const categoryPairs = {
       'forex': [
         { name: 'EURUSD', price: 1.0850 }, { name: 'GBPUSD', price: 1.2640 }, { name: 'USDJPY', price: 149.50 },
@@ -1044,7 +1068,7 @@ HTML_TEMPLATE = """<!doctype html>
     };
     const categoryNames = { 'forex': '外汇', 'index': '指数', 'commodity': '大宗商品', 'metal': '贵金属', 'stock': '股票' };
 
-    function showCategoryPairs(category) {
+    window.showCategoryPairs = function(category) {
       const container = $('pairListContainer');
       const title = $('pairModalTitle');
       const pairs = categoryPairs[category] || [];
@@ -1055,14 +1079,15 @@ HTML_TEMPLATE = """<!doctype html>
       });
       container.innerHTML = html;
       $('pairMask').style.display = 'flex';
-    }
+    };
 
-    function setSymbol(name, price) {
-      $('symName').innerText = name; quantState.price = price;
+    window.setSymbol = function(name, price) {
+      $('symName').innerText = name; 
+      window.quantState.price = price;
       $('midPriceText').innerText = price.toFixed(name === 'XAUUSD' ? 2 : 4);
       $('pairMask').style.display = 'none';
-      updateCalculations();
-    }
+      window.updateCalculations();
+    };
   </script>
 </body>
 </html>"""
