@@ -1,9 +1,11 @@
-JG-CF-B8E5662DF4F28140<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <title>量化交易终端 - 专业版</title>
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>量化交易终端 - 移动专业版</title>
   <style>
     :root {
       --bg: #f5f7fa;
@@ -24,7 +26,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       color: var(--text); background: var(--bg); line-height: 1.5;
     }
 
-    /* 容器布局 (移除底部导航留白) */
+    /* 容器布局 */
     .app { max-width: 1000px; margin: 0 auto; min-height: 100vh; padding: 20px; }
 
     /* 顶部 */
@@ -34,7 +36,8 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     .btn:hover { background: var(--chip); }
 
     /* 顶部分类 Tabs (5大分类) */
-    .tabs-wrapper { overflow-x: auto; white-space: nowrap; margin-bottom: 20px; -webkit-overflow-scrolling: touch; padding-bottom: 5px; }
+    .tabs-wrapper { overflow-x: auto; white-space: nowrap; margin-bottom: 20px; -webkit-overflow-scrolling: touch; padding-bottom: 5px; scrollbar-width: none; }
+    .tabs-wrapper::-webkit-scrollbar { display: none; }
     .tabs { display: inline-flex; gap: 8px; }
     .tab { padding: 8px 16px; border-radius: 8px; background: transparent; color: var(--muted); font-weight: 700; border: none; cursor: pointer; font-size: 15px; transition: 0.2s; }
     .tab.active { background: var(--card); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
@@ -51,7 +54,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     /* 核心左右布局 */
     .main-grid { display: flex; gap: 20px; align-items: stretch; }
     .col-left { flex: 1.2; display: flex; flex-direction: column; gap: 20px; }
-    .col-right { flex: 1; display: flex; flex-direction: column; gap: 20px; }
+    .col-right { flex: 1; display: flex; flex-direction: column; gap: 20px; position: relative;}
     .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px; }
 
     /* 左侧：账户与行情 */
@@ -90,7 +93,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     .form-row input { border: none; background: transparent; text-align: right; width: 100%; margin-left: 16px; font-size: 15px; font-weight: 800; color: var(--text); outline: none; font-family: inherit; }
     .form-row .value-text { font-size: 15px; font-weight: 800; color: var(--text); }
 
-    /* 原生滑块样式重写 - 从左往右色彩填充 */
+    /* 原生滑块样式重写 */
     .range-wrap { margin: 20px 0 24px; padding: 0; }
     .range-header { display: flex; justify-content: space-between; margin-bottom: 12px; font-size: 14px; font-weight: 700; color: var(--muted); align-items: center;}
     input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; padding: 10px 0; margin: 0; cursor: pointer; }
@@ -98,12 +101,9 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 6px; cursor: pointer; background: linear-gradient(to right, var(--text) 0%, var(--text) var(--track-fill, 10%), var(--line) var(--track-fill, 10%), var(--line) 100%); border-radius: 3px; }
     input[type=range]::-webkit-slider-thumb { height: 24px; width: 24px; border-radius: 50%; background: #fff; border: 4px solid var(--text); cursor: pointer; -webkit-appearance: none; margin-top: -9px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
 
-    /* 杠杆滑块样式 */
-    input[type=range].lev-slider { }
-
     /* 动作按钮 */
     .cta-group { display: flex; gap: 12px; margin-top: 10px;}
-    .cta { border: none; flex: 1; padding: 16px; border-radius: 12px; color: #fff; font-size: 16px; font-weight: 800; cursor: pointer; transition: transform 0.1s; }
+    .cta { border: none; flex: 1; padding: 16px; border-radius: 12px; color: #fff; font-size: 16px; font-weight: 800; cursor: pointer; transition: transform 0.1s; display: flex; align-items: center; justify-content: center; }
     .cta:active { transform: scale(0.98); }
     .cta.buy { background: var(--green); }
     .cta.sell { background: var(--red); }
@@ -122,15 +122,16 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     .posTitle { display: flex; gap: 8px; align-items: center; font-weight: 800; font-size: 18px; }
     .sideTag { padding: 2px 8px; border-radius: 6px; font-size: 13px; font-weight: 800; border: 1px solid; background: #fff; }
     .sideTag.buy { color: var(--green); border-color: rgba(37,185,122,.3); }
+    .sideTag.sell { color: var(--red); border-color: rgba(246,70,93,.3); }
     .posGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; margin-bottom: 16px; }
     .mini { color: var(--muted); font-size: 12px; font-weight: 600; margin-bottom: 4px; }
     .big { font-weight: 800; font-size: 15px; }
     .posActions { display: flex; gap: 12px; }
-    .ghost { flex: 1; border: 1px solid var(--line); background: transparent; border-radius: 8px; padding: 10px; font-weight: 700; cursor: pointer; transition: 0.2s; }
+    .ghost { flex: 1; border: 1px solid var(--line); background: transparent; border-radius: 8px; padding: 10px; font-weight: 700; cursor: pointer; transition: 0.2s; text-align: center;}
     .ghost:hover { background: var(--chip); }
 
     /* 弹窗通用样式 */
-    .modalMask { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 100; backdrop-filter: blur(2px); }
+    .modalMask { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 100; backdrop-filter: blur(2px); transition: 0.3s; }
     .modal { width: min(440px, 100%); background: #fff; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.1); animation: pop 0.2s ease-out; display: flex; flex-direction: column; max-height: 90vh; }
     @keyframes pop { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
     .modalHeader { padding: 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); font-weight: 800; font-size: 18px; flex-shrink: 0; }
@@ -140,29 +141,16 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     .select-item:hover { background: var(--chip); }
     .select-item.active { color: var(--text); }
 
-    /* 问卷专用样式 */
+    /* 问卷及其他专用样式 */
     .quiz-item { margin-bottom: 24px; }
     .quiz-q { font-size: 15px; font-weight: 800; margin-bottom: 12px; color: var(--text); }
     .quiz-opts { display: flex; gap: 12px; }
     .quiz-opt { flex: 1; padding: 12px; border: 1px solid var(--line); border-radius: 10px; text-align: center; font-weight: 700; cursor: pointer; transition: 0.2s; background: var(--chip); }
     .quiz-opt.selected { background: var(--text); color: #fff; border-color: var(--text); }
 
-    /* 日历专用样式 */
-    .cal-header { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; font-weight: 800; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
-    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-    .cal-day { border: 1px solid var(--line); border-radius: 8px; padding: 8px 4px; text-align: center; min-height: 60px; display: flex; flex-direction: column; justify-content: space-between; }
-    .cal-day.empty { border: none; background: transparent; }
-    .cal-date { font-weight: 800; font-size: 14px; color: var(--text); }
-    .cal-pnl { font-size: 11px; font-weight: 800; margin-top: 4px; }
-
-    /* 修改订单专用样式 */
-    .lock-btn { background: linear-gradient(135deg, #f6465d, #ff7b8c); color: #fff; border: none; padding: 16px; border-radius: 12px; font-size: 16px; font-weight: 800; width: 100%; box-shadow: 0 4px 12px rgba(246,70,93,0.3); cursor: pointer; margin-top: 10px; transition: 0.2s; }
-    .lock-btn:active { transform: scale(0.98); }
-
-    /* 错误提示弹窗样式 */
-    .error-popup { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(4px); animation: fadeIn 0.2s ease-out; }
+    /* 错误提示弹窗 */
+    .error-popup { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(4px); }
     .error-popup.show { display: flex; }
-    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     .error-popup-content { background: #fff; border-radius: 20px; padding: 30px; width: min(360px, 85%); text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3); animation: popUp 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
     @keyframes popUp { from { transform: scale(0.8) translateY(20px); opacity: 0; } to { transform: scale(1) translateY(0); opacity: 1; } }
     .error-popup-icon { width: 70px; height: 70px; background: linear-gradient(135deg, #fee2e2, #fecaca); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 36px; }
@@ -172,14 +160,98 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     .error-popup-item:last-child { border-bottom: none; }
     .error-popup-item::before { content: "⚠️"; margin-right: 8px; }
     .error-popup-btn { background: linear-gradient(135deg, #1f2937, #374151); color: #fff; border: none; padding: 14px 32px; border-radius: 12px; font-size: 15px; font-weight: 700; cursor: pointer; transition: 0.2s; width: 100%; }
-    .error-popup-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+    
+    .lock-btn { background: linear-gradient(135deg, #f6465d, #ff7b8c); color: #fff; border: none; padding: 16px; border-radius: 12px; font-size: 16px; font-weight: 800; width: 100%; box-shadow: 0 4px 12px rgba(246,70,93,0.3); cursor: pointer; margin-top: 10px;}
 
-    @media (max-width: 768px) { .main-grid { flex-direction: column; } }
+    /* 日历专用样式 */
+    .cal-header { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; font-weight: 800; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+    .cal-day { border: 1px solid var(--line); border-radius: 8px; padding: 8px 4px; text-align: center; min-height: 60px; display: flex; flex-direction: column; justify-content: space-between; }
+    .cal-day.empty { border: none; background: transparent; }
+    .cal-date { font-weight: 800; font-size: 14px; color: var(--text); }
+    .cal-pnl { font-size: 11px; font-weight: 800; margin-top: 4px; }
+
+    /* ==================================================
+       手机端深度适配优化 (Mobile First Overrides)
+       ================================================== */
+    @media (max-width: 768px) {
+      /* 预留底部悬浮按钮和安全区域的空间 */
+      .app { padding: 12px; padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
+
+      /* 顶部精简 */
+      .topbar { margin-bottom: 12px; }
+      .title { font-size: 18px; }
+      .btn { padding: 8px 12px; font-size: 13px; }
+
+      .tabs-wrapper { margin-bottom: 12px; }
+      .tab { padding: 10px 14px; font-size: 14px; } /* 增大点击热区 */
+
+      /* 品种行情 */
+      .symRow { padding: 16px 12px; margin-bottom: 16px; border-radius: 16px; }
+      .symName { font-size: 22px; gap: 8px; }
+      .symBadge { font-size: 12px; padding: 4px 8px; }
+      .iconBtn.huge-chart { width: 54px; height: 54px; font-size: 24px; border-radius: 12px; }
+
+      /* 布局流转为单列 */
+      .main-grid { flex-direction: column; gap: 16px; }
+      .card { padding: 16px; border-radius: 16px; }
+
+      /* 左侧重排 */
+      .obTopStats { grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 16px; }
+      .midPrice { font-size: 32px; margin: 12px 0 5px; }
+      
+      /* 表单交互优化：增加行高防误触 */
+      .form-row { padding: 16px; margin-bottom: 10px; }
+      .form-row label, .form-row input { font-size: 15px; }
+      input[type=range]::-webkit-slider-thumb { height: 26px; width: 26px; } /* 放大滑块头 */
+
+      /* 底部持仓卡片适配 */
+      .posTop { flex-direction: column; gap: 12px; }
+      .posTop > div:last-child { text-align: left; }
+      .posGrid { grid-template-columns: repeat(3, 1fr); gap: 12px; }
+      
+      /* ★ 核心：悬浮底部交易按钮 ★ */
+      .cta-group {
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        background: var(--card);
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+        margin: 0;
+        box-shadow: 0 -4px 20px rgba(0,0,0,0.08);
+        border-top: 1px solid var(--line);
+        z-index: 50;
+      }
+      .cta { padding: 14px; font-size: 16px; border-radius: 12px; }
+
+      /* ★ 核心：底部抽屉式弹窗 (Bottom Sheet) ★ */
+      .modalMask { align-items: flex-end; padding: 0; background: rgba(0,0,0,0.6); }
+      .modal {
+        width: 100%;
+        margin-top: auto;
+        border-radius: 24px 24px 0 0;
+        animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        max-height: 85vh;
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+      
+      .modalHeader { padding: 16px 20px; font-size: 17px; }
+      .modalBody { padding: 16px 20px; }
+      .select-item { padding: 18px 0; font-size: 15px; } /* 放大列表项热区 */
+      
+      /* 问卷项 */
+      .quiz-opts { flex-direction: column; gap: 10px; }
+      .quiz-opt { padding: 14px; font-size: 14px; }
+
+      /* 错误弹窗（保持居中，但适配尺寸） */
+      .error-popup { align-items: center; padding: 20px; }
+      .error-popup-content { padding: 24px 20px; border-radius: 24px; width: 100%; animation: popUp 0.3s; }
+      .error-popup-btn { padding: 14px; font-size: 15px; }
+    }
   </style>
 </head>
 <body>
 
-  <!-- 错误提示弹窗 -->
   <div class="error-popup" id="errorPopup" onclick="closeErrorPopup(event)">
     <div class="error-popup-content">
       <div class="error-popup-icon">⚠️</div>
@@ -191,33 +263,24 @@ JG-CF-B8E5662DF4F28140<!doctype html>
 
   <script>
     const API = {
-      // 1. 发送下单指令
       submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
         console.log("【API】执行下单:", {symbol, side, type, marginPct, leverage, calculatedLots, ...params});
-        // fetch('/api/v1/order', { method: 'POST', body: JSON.stringify(...) })
         return { success: true };
       },
-      // 2. 修改持仓订单 (分批止盈止损)
       modifyPosition: async function(positionId, tpPrice, tpLots, slPrice, slLots) {
-        console.log("【API】修改持仓:", {positionId, tpPrice, tpLots, slPrice, slLots});
         return { success: true };
       },
-      // 3. 锁仓接口
       lockPosition: async function(positionId) {
-        console.log("【API】一键锁仓:", {positionId});
         return { success: true };
       },
-      // 4. 获取历史日历盈亏数据
       getCalendarPnL: async function(year, month) {
-        console.log("【API】获取日历数据:", year, month);
         let data = {};
-        for(let i=1; i<=31; i++) {
-          if(Math.random() > 0.3) data[i] = (Math.random() * 200 - 80).toFixed(2);
-        }
+        for(let i=1; i<=31; i++) { if(Math.random() > 0.3) data[i] = (Math.random() * 200 - 80).toFixed(2); }
         return data;
       }
     };
   </script>
+
   <div class="app">
     <div class="topbar">
       <div class="title">MT4 量化终端</div>
@@ -264,7 +327,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
 
         <div class="sl-calculator">
           <div class="sl-title">
-            <span>基于当前仓位预估止损额度</span>
+            <span>基于当前仓位预估止损</span>
             <span style="color:var(--muted); font-size:11px; font-weight:600">公式: 预付款×杠杆×比例</span>
           </div>
           <div style="height:1px; background:var(--line); margin:12px 0;"></div>
@@ -276,8 +339,8 @@ JG-CF-B8E5662DF4F28140<!doctype html>
           
           <div style="height:1px; background:var(--line); margin:12px 0;"></div>
           <div class="sl-row"><span class="k">占用保证金</span><span class="v" id="calcMargin">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">当前设置下每点波动≈</span><span class="v" id="calcPpVal">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">预估强平价格</span><span class="v" id="calcLiq">0.00</span></div>
+          <div class="sl-row"><span class="k">每点波动≈</span><span class="v" id="calcPpVal">0.00 USD</span></div>
+          <div class="sl-row"><span class="k">预估强平价</span><span class="v" id="calcLiq">0.00</span></div>
         </div>
       </div>
 
@@ -300,7 +363,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
 
           <div class="range-wrap" style="margin-top: auto;">
             <div class="range-header">
-              <span>仓位占比 (基于可用余额)</span>
+              <span>仓位占比</span>
               <span style="color: var(--text); font-size: 16px;">
                 <span id="pctText">10</span>% 
                 <span style="font-size: 12px; color: var(--muted); margin-left: 4px;">(<span id="lotsText">0.00</span> 手)</span>
@@ -393,8 +456,8 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       <div class="modalHeader"><span>高级订单管理</span><button class="btn" style="border:none; padding:4px 8px;" onclick="$('modifyMask').style.display='none'">✕</button></div>
       <div class="modalBody">
         <div style="margin-bottom: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 12px;">
-          <div class="form-row" style="margin-bottom: 12px;">
-            <label style="color:var(--green)">止盈触发价 (T/P)</label>
+          <div class="form-row" style="margin-bottom: 12px; padding: 10px;">
+            <label style="color:var(--green)">止盈触发价</label>
             <input type="number" id="modTpPrice" placeholder="输入价格">
           </div>
           <div class="range-wrap" style="margin: 0;">
@@ -404,8 +467,8 @@ JG-CF-B8E5662DF4F28140<!doctype html>
         </div>
 
         <div style="margin-bottom: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 12px;">
-          <div class="form-row" style="margin-bottom: 12px;">
-            <label style="color:var(--red)">止损触发价 (S/L)</label>
+          <div class="form-row" style="margin-bottom: 12px; padding: 10px;">
+            <label style="color:var(--red)">止损触发价</label>
             <input type="number" id="modSlPrice" placeholder="输入价格">
           </div>
           <div class="range-wrap" style="margin: 0;">
@@ -421,7 +484,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
   </div>
 
   <div class="modalMask" id="calendarMask" onclick="closeModal(event, 'calendarMask')">
-    <div class="modal" style="height: 80vh;">
+    <div class="modal">
       <div class="modalHeader">
         <span>当月交易日历</span>
         <button class="btn" style="border:none; padding:4px 8px;" onclick="$('calendarMask').style.display='none'">✕</button>
@@ -431,8 +494,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
         <div class="cal-header">
           <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
         </div>
-        <div class="cal-grid" id="calGrid">
-          </div>
+        <div class="cal-grid" id="calGrid"></div>
       </div>
     </div>
   </div>
@@ -443,12 +505,12 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       <div class="modalBody">
         <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
           <span style="color:var(--muted); font-weight:700;">当前选择杠杆</span>
-          <span style="font-size:18px; font-weight:800;"><span id="levTextModal">20</span>x</span>
+          <span style="font-size:24px; font-weight:800;"><span id="levTextModal">20</span>x</span>
         </div>
         <div class="range-wrap" style="margin-top:0;">
           <input type="range" id="levSlider" min="1" max="100" step="1" value="20">
         </div>
-        <div style="color:#d97706; font-size:12px; font-weight:700; margin-bottom:20px;">* 提示：调整杠杆会重算占用资金及止损额度估值。</div>
+        <div style="color:#d97706; font-size:13px; font-weight:700; margin-bottom:24px;">* 提示：调整杠杆会重算占用资金及止损额度估值。</div>
         <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="$('levMask').style.display='none'">确认修改</button>
       </div>
     </div>
@@ -458,10 +520,10 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     <div class="modal">
       <div class="modalHeader"><span>选择交易类型</span><button class="btn" style="border:none; padding:4px 8px;" onclick="$('orderTypeMask').style.display='none'">✕</button></div>
       <div class="modalBody" style="padding: 0;">
-        <div class="select-item" onclick="setOrderType('market', '市价')">市价</div>
-        <div class="select-item" onclick="setOrderType('market_tpsl', '市价止盈止损')">市价止盈止损</div>
-        <div class="select-item" onclick="setOrderType('limit', '限价单')">限价单</div>
-        <div class="select-item active" onclick="setOrderType('limit_tpsl', '限价止盈止损')">限价止盈止损</div>
+        <div class="select-item" onclick="setOrderType('market', '市价')"><span style="margin-left:20px;">市价</span></div>
+        <div class="select-item" onclick="setOrderType('market_tpsl', '市价止盈止损')"><span style="margin-left:20px;">市价止盈止损</span></div>
+        <div class="select-item" onclick="setOrderType('limit', '限价单')"><span style="margin-left:20px;">限价单</span></div>
+        <div class="select-item active" onclick="setOrderType('limit_tpsl', '限价止盈止损')"><span style="margin-left:20px;">限价止盈止损</span></div>
       </div>
     </div>
   </div>
@@ -469,71 +531,53 @@ JG-CF-B8E5662DF4F28140<!doctype html>
   <div class="modalMask" id="pairMask" onclick="closeModal(event, 'pairMask')">
     <div class="modal">
       <div class="modalHeader"><span id="pairModalTitle">切换交易品种</span><button class="btn" style="border:none; padding:4px 8px;" onclick="$('pairMask').style.display='none'">✕</button></div>
-      <div class="modalBody" id="pairListContainer">
-        <!-- 品种列表由 JavaScript 动态生成 -->
-      </div>
+      <div class="modalBody" id="pairListContainer" style="padding: 0;">
+        </div>
     </div>
   </div>
 
   <script>
     const $ = id => document.getElementById(id);
 
-    // === 核心状态与参数 ===
     const quantState = {
       equity: 10125.50,         
-      availMargin: 9540.20,     // 固定的可用资金
+      availMargin: 9540.20,
       price: 2345.50,           
       contractSize: 100,        
       pointSize: 0.01,          
-      marginPct: 10,            // 选定的可用资金占比 0-100%
+      marginPct: 10,            
       leverage: 20,             
-      lots: 0,                  // 根据上述参数动态计算而来的手数
+      lots: 0,                  
       orderType: 'limit_tpsl',
       pendingSide: '' 
     };
 
     let quizAnswers = {};
 
-    // --- 核心计算引擎 (基于可用余额比例) ---
     function updateCalculations() {
       const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = quantState;
-      
-      // 1. 计算要使用的保证金 = 可用余额 * (比例/100)
       const usedMargin = availMargin * (marginPct / 100);
-      
-      // 2. 名义价值 (Notional) = 使用的保证金 * 杠杆
       const notional = usedMargin * leverage;
       
-      // 3. 动态反推手数 Lots = 名义价值 / (合约大小 * 价格)
-      // 向下取整到0.01手，防止小数溢出
       let calculatedLots = notional / (contractSize * price);
       calculatedLots = Math.floor(calculatedLots * 100) / 100; 
-      
-      // 保存至全局状态供下单 API 使用
       quantState.lots = calculatedLots;
 
-      // 更新滑块文本
       $('pctText').innerText = marginPct;
       $('lotsText').innerText = calculatedLots.toFixed(2);
 
-      // 4. 更新止损估值列表 (Notional * Pct)
       [2, 3, 5, 8, 10].forEach(pct => {
         $(`sl_${pct}`).innerText = (notional * (pct / 100)).toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       });
 
-      // 每点波动 (暴露头寸影响) = 手数 * 合约大小 * 最小点
       const perPointMoney = calculatedLots * contractSize * pointSize;
-      
-      // 预估强平价 (简化多头模型：强平价 = 开仓价 - (账户净值 / (手数*合约大小)))
       const liqPrice = calculatedLots > 0 ? Math.max(0, price - (equity / (calculatedLots * contractSize))) : 0;
 
-      // 更新下方杂项指标
       $('calcMargin').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       $('calcPpVal').innerText = perPointMoney.toFixed(2) + " USD";
       $('calcLiq').innerText = calculatedLots > 0 ? liqPrice.toLocaleString('en-US', {minimumFractionDigits:2}) : "0.00";
     }
 
-    // --- 动态渲染表单逻辑 (带订单有效时间) ---
     function setOrderType(typeCode, typeName) {
       quantState.orderType = typeCode;
       $('orderTypeText').innerText = typeName;
@@ -541,7 +585,7 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       
       document.querySelectorAll('#orderTypeMask .select-item').forEach(el => {
         el.classList.remove('active');
-        if(el.innerText === typeName) el.classList.add('active');
+        if(el.innerText.trim() === typeName) el.classList.add('active');
       });
 
       const area = $('dynamicFormArea');
@@ -551,17 +595,15 @@ JG-CF-B8E5662DF4F28140<!doctype html>
         </div>`;
       
       let html = '';
-      if(typeCode === 'market') { html += renderInput('点差', '0.00'); }
-      else if(typeCode === 'market_tpsl') { html += renderInput('止盈价', '0.00'); html += renderInput('止损价', '0.00'); html += renderInput('点差', '0.00'); }
+      if(typeCode === 'market') { html += renderInput('点差', '0.00'); } 
+      else if(typeCode === 'market_tpsl') { html += renderInput('止盈价', '0.00'); html += renderInput('止损价', '0.00'); html += renderInput('点差', '0.00'); } 
       else if(typeCode === 'limit') { html += renderInput('触发价', '0.00'); }
       else if(typeCode === 'limit_tpsl') { html += renderInput('止盈价', '0.00'); html += renderInput('止损价', '0.00'); html += renderInput('触发价', '0.00'); }
       
-      html += renderInput('有效时间 (分钟)', '输入过期分钟数');
+      html += renderInput('有效时间(分)', '分钟数');
       area.innerHTML = html;
     }
 
-    // --- 问卷交互逻辑 ---
-    // --- 表单验证逻辑 ---
     function validateFormInputs() {
       const area = $('dynamicFormArea');
       const inputs = area.querySelectorAll('input');
@@ -571,29 +613,23 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       inputs.forEach((input, index) => {
         const label = labels[index] ? labels[index].innerText : '字段' + (index + 1);
         const value = input.value;
-
-        // 检查是否为空或0
         if (value === '' || value === null || value === undefined) {
           errors.push(`${label} 不能为空`);
         } else if (!isNaN(value) && parseFloat(value) === 0) {
-          errors.push(`${label} 不能为0`);
+          errors.push(`${label} 不能为 0`);
         }
       });
-
       return errors;
     }
 
     function initiateOrder(side) {
-      // 先验证表单数据
       const validationErrors = validateFormInputs();
       if (validationErrors.length > 0) {
-        // 显示美化后的错误弹窗
         const errorList = $('errorPopupList');
         errorList.innerHTML = validationErrors.map(err => `<div class="error-popup-item">${err}</div>`).join('');
         $('errorPopup').classList.add('show');
         return;
       }
-
       quantState.pendingSide = side;
       quizAnswers = {};
       document.querySelectorAll('.quiz-opt').forEach(el => el.classList.remove('selected'));
@@ -611,32 +647,22 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       if(Object.keys(quizAnswers).length < 3) return alert('请先完成所有风控自检题！');
       $('quizMask').style.display = 'none';
 
-      // 获取表单数据
       const formData = getFormInputs();
-
+      
       API.submitOrder(
-        $('symName').innerText,
-        quantState.pendingSide,
-        quantState.orderType,
-        quantState.marginPct,
-        quantState.leverage,
+        $('symName').innerText, 
+        quantState.pendingSide, 
+        quantState.orderType, 
+        quantState.marginPct, 
+        quantState.leverage, 
         quantState.lots,
         { quiz: quizAnswers, ...formData }
       ).then(() => {
-        // 添加订单到当前委托列表
-        addToPendingOrders(
-          $('symName').innerText,
-          quantState.pendingSide,
-          quantState.orderType,
-          quantState.lots,
-          formData
-        );
-
-        alert(`指令发送成功！\n类型：${quantState.orderType}\n方向：${quantState.pendingSide}\n计算出对应手数：${quantState.lots.toFixed(2)}手`);
+        addToPendingOrders($('symName').innerText, quantState.pendingSide, quantState.orderType, quantState.lots, formData);
+        alert(`指令发送成功！\n类型：${quantState.orderType}\n方向：${quantState.pendingSide}\n对应手数：${quantState.lots.toFixed(2)}手`);
       });
     }
 
-    // --- 获取表单数据 ---
     function getFormInputs() {
       const area = $('dynamicFormArea');
       const inputs = area.querySelectorAll('input');
@@ -649,11 +675,9 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       return data;
     }
 
-    // --- 添加订单到当前委托列表 ---
     function addToPendingOrders(symbol, side, type, lots, formData) {
       const ordersList = $('list-orders');
-      // 如果当前显示"暂无委托"，先清空
-      if (ordersList.querySelector('.posItem') && ordersList.querySelector('.posItem').innerText.includes('暂无')) {
+      if (ordersList.querySelector('.posItem') == null && ordersList.innerText.includes('暂无')) {
         ordersList.innerHTML = '';
       }
 
@@ -663,7 +687,6 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       const sideClass = side === 'BUY' ? 'buy' : 'sell';
       const sideText = side === 'BUY' ? 'Buy' : 'Sell';
 
-      // 构建表单数据展示
       let formInfo = '';
       for (const [key, value] of Object.entries(formData)) {
         if (value) formInfo += `<div><div class="mini">${key}</div><div class="big">${value}</div></div>`;
@@ -690,30 +713,23 @@ JG-CF-B8E5662DF4F28140<!doctype html>
             ${formInfo}
           </div>
           <div class="posActions">
-            <button class="ghost" onclick="alert('撤单接口: ${orderId}')">撤单</button>
+            <button class="ghost" onclick="alert('撤单接口: ${orderId}')">撤销挂单</button>
           </div>
         </div>
       `;
 
       ordersList.insertAdjacentHTML('beforeend', orderHTML);
-
-      // 更新底部标签显示
       updateOrdersCount();
     }
 
-    // --- 更新委托数量显示 ---
     function updateOrdersCount() {
       const ordersList = $('list-orders');
       const orderItems = ordersList.querySelectorAll('.posItem');
-      const count = orderItems.length;
-      // 查找当前委托标签并更新数量
-      document.querySelectorAll('.segTabs .seg')[1].innerHTML = `当前委托 (${count})`;
+      document.querySelectorAll('.segTabs .seg')[1].innerHTML = `当前委托 (${orderItems.length})`;
     }
 
-    // --- 修改订单 (止盈止损) 面板交互 ---
     function openModifyOrderPanel() {
       const currentLots = parseFloat($('posLotsVal').innerText);
-      
       const tpSlider = $('tpLotsSlider');
       const slSlider = $('slLotsSlider');
       tpSlider.max = currentLots; tpSlider.value = currentLots;
@@ -731,7 +747,6 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     function submitModifyOrder() {
       const tpP = $('modTpPrice').value; const tpL = $('tpLotsSlider').value;
       const slP = $('modSlPrice').value; const slL = $('slLotsSlider').value;
-      
       API.modifyPosition('MT4_8821', tpP, tpL, slP, slL).then(() => {
         alert(`修改成功！\n止盈: ${tpL}手 @${tpP||'未设'}\n止损: ${slL}手 @${slP||'未设'}`);
         $('modifyMask').style.display = 'none';
@@ -739,15 +754,12 @@ JG-CF-B8E5662DF4F28140<!doctype html>
     }
 
     function executeLockPosition() {
-      // 验证止盈止损价格是否已填写
       const tpPrice = $('modTpPrice').value;
       const slPrice = $('modSlPrice').value;
-
       if (!tpPrice || tpPrice.trim() === '' || !slPrice || slPrice.trim() === '') {
-        alert('❌ 无法执行锁仓！\n\n原因：止盈价格和止损价格都必须填写才能进行锁仓操作。\n\n请先在下方设置止盈价和止损价。');
+        alert('❌ 无法执行锁仓！\n请先在下方设置止盈价和止损价。');
         return;
       }
-
       if (confirm('警告：一键锁仓将开立相同手数的反向订单对冲，是否继续？')) {
         API.lockPosition('MT4_8821').then(() => {
           alert('锁仓指令已执行。');
@@ -756,7 +768,6 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       }
     }
 
-    // --- 交易日历面板逻辑 ---
     function openCalendar() {
       $('calendarMask').style.display = 'flex';
       renderCalendar();
@@ -777,16 +788,10 @@ JG-CF-B8E5662DF4F28140<!doctype html>
           const sign = val > 0 ? '+' : '';
           pnlStr = `<div class="cal-pnl" style="color:${color}">${sign}${val}</div>`;
         }
-        grid.innerHTML += `
-          <div class="cal-day">
-            <div class="cal-date">${i}</div>
-            ${pnlStr}
-          </div>
-        `;
+        grid.innerHTML += `<div class="cal-day"><div class="cal-date">${i}</div>${pnlStr}</div>`;
       }
     }
 
-    // --- 模拟网络延迟信号灯 ---
     let lastDataTick = Date.now();
     setInterval(() => {
       if (Math.random() > 0.4) lastDataTick = Date.now();
@@ -797,38 +802,30 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       else { dot.className = 'signal-dot red'; dot.title = '连接缓慢 (>5s)'; }
     }, 1000);
 
-    // --- 初始化及原生 HTML5 滑块绑定 ---
     window.onload = () => {
       setOrderType('limit_tpsl', '限价止盈止损');
 
-      // 绑定比例滑块 (改变百分比 -> 反推手数)
       const marginSlider = $('marginSlider');
-      // 初始化滑块色彩填充
       marginSlider.style.setProperty('--track-fill', marginSlider.value + '%');
       marginSlider.oninput = function() {
         quantState.marginPct = parseInt(this.value);
-        // 动态更新滑块从左到右的色彩填充
         this.style.setProperty('--track-fill', this.value + '%');
         updateCalculations();
       };
 
-      // 绑定杠杆滑块 (改变杠杆 -> 同样反推手数及各项指标)
       const levSlider = $('levSlider');
-      // 初始化杠杆滑块色彩填充
       levSlider.style.setProperty('--track-fill', (levSlider.value / levSlider.max * 100) + '%');
       levSlider.oninput = function() {
         quantState.leverage = parseInt(this.value);
-        // 动态更新滑块从左到右的色彩填充
         this.style.setProperty('--track-fill', (this.value / this.max * 100) + '%');
         $('levTextModal').innerText = quantState.leverage;
         $('btnLev').innerText = `杠杆 ${quantState.leverage}x ▼`;
         updateCalculations();
       };
-
+      
       updateCalculations();
     };
 
-    // UI 通用辅助
     function switchMainTab(el) { document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active')); el.classList.add('active'); }
     function switchBottomTab(target) {
       document.querySelectorAll('.segTabs .seg').forEach(el => el.classList.remove('active'));
@@ -836,79 +833,34 @@ JG-CF-B8E5662DF4F28140<!doctype html>
       $('list-positions').classList.toggle('active', target === 'positions');
       $('list-orders').classList.toggle('active', target === 'orders');
     }
-    function closeModal(e, id) { if(e.target.id === id) $(id).style.display = 'none'; }
+    // 点击蒙版关闭弹窗的通用方法
+    function closeModal(e, id) { 
+      if(e.target.id === id) {
+        // 为了配合动画，最好使用类名控制，此处保持简单，直接隐藏
+        $(id).style.display = 'none'; 
+      }
+    }
     function closeErrorPopup(e) { if(e.target.id === 'errorPopup') $('errorPopup').classList.remove('show'); }
-    // --- 品种分类数据 ---
+
     const categoryPairs = {
-      'forex': [
-        { name: 'EURUSD', price: 1.0850 },
-        { name: 'GBPUSD', price: 1.2640 },
-        { name: 'USDJPY', price: 149.50 },
-        { name: 'AUDUSD', price: 0.6520 },
-        { name: 'USDCAD', price: 1.3580 },
-        { name: 'USDCHF', price: 0.8840 },
-        { name: 'NZDUSD', price: 0.6080 },
-        { name: 'EURGBP', price: 0.8580 }
-      ],
-      'index': [
-        { name: 'US30', price: 38500 },
-        { name: 'US500', price: 5120 },
-        { name: 'NAS100', price: 17800 },
-        { name: 'GER40', price: 18650 },
-        { name: 'UK100', price: 8020 },
-        { name: 'JPN225', price: 39800 },
-        { name: 'HK50', price: 17800 },
-        { name: 'AUS200', price: 7850 }
-      ],
-      'commodity': [
-        { name: 'XTIUSD', price: 78.50 },
-        { name: 'XBRUSD', price: 82.30 },
-        { name: 'XNGUSD', price: 2.85 },
-        { name: 'XCUUSD', price: 3.85 },
-        { name: 'XPTUSD', price: 980.50 },
-        { name: 'XPDUSD', price: 1020.30 },
-        { name: 'CL-OIL', price: 78.50 },
-        { name: 'NG-GAS', price: 2.85 }
-      ],
-      'metal': [
-        { name: 'XAUUSD', price: 2345.50 },
-        { name: 'XAGUSD', price: 28.50 },
-        { name: 'XAUAUD', price: 3580.20 },
-        { name: 'XAGAUD', price: 43.80 }
-      ],
-      'stock': [
-        { name: 'AAPL', price: 185.50 },
-        { name: 'GOOGL', price: 142.30 },
-        { name: 'MSFT', price: 415.20 },
-        { name: 'AMZN', price: 178.50 },
-        { name: 'TSLA', price: 245.80 },
-        { name: 'NVDA', price: 875.30 },
-        { name: 'META', price: 485.20 },
-        { name: 'BABA', price: 82.50 }
-      ]
+      'forex': [ { name: 'EURUSD', price: 1.0850 }, { name: 'GBPUSD', price: 1.2640 }, { name: 'USDJPY', price: 149.50 }, { name: 'AUDUSD', price: 0.6520 } ],
+      'index': [ { name: 'US30', price: 38500 }, { name: 'US500', price: 5120 }, { name: 'NAS100', price: 17800 }, { name: 'GER40', price: 18650 } ],
+      'commodity': [ { name: 'XTIUSD', price: 78.50 }, { name: 'XBRUSD', price: 82.30 }, { name: 'XNGUSD', price: 2.85 }, { name: 'XCUUSD', price: 3.85 } ],
+      'metal': [ { name: 'XAUUSD', price: 2345.50 }, { name: 'XAGUSD', price: 28.50 }, { name: 'XAUAUD', price: 3580.20 }, { name: 'XAGAUD', price: 43.80 } ],
+      'stock': [ { name: 'AAPL', price: 185.50 }, { name: 'GOOGL', price: 142.30 }, { name: 'MSFT', price: 415.20 }, { name: 'AMZN', price: 178.50 } ]
     };
 
-    const categoryNames = {
-      'forex': '外汇',
-      'index': '指数',
-      'commodity': '大宗商品',
-      'metal': '贵金属',
-      'stock': '股票'
-    };
+    const categoryNames = { 'forex': '外汇', 'index': '指数', 'commodity': '大宗商品', 'metal': '贵金属', 'stock': '股票' };
 
-    // --- 显示分类品种列表 ---
     function showCategoryPairs(category) {
       const container = $('pairListContainer');
       const title = $('pairModalTitle');
       const pairs = categoryPairs[category] || [];
-
       title.innerText = '选择' + (categoryNames[category] || '交易品种');
-
       let html = '';
       pairs.forEach(pair => {
-        html += `<div class="select-item" onclick="setSymbol('${pair.name}', ${pair.price})">${pair.name}</div>`;
+        html += `<div class="select-item" onclick="setSymbol('${pair.name}', ${pair.price})"><span style="margin-left:20px">${pair.name}</span></div>`;
       });
-
       container.innerHTML = html;
       $('pairMask').style.display = 'flex';
     }
