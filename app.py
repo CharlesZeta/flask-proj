@@ -175,37 +175,23 @@
        手机端深度适配优化 (Mobile First Overrides)
        ================================================== */
     @media (max-width: 768px) {
-      /* 预留底部悬浮按钮和安全区域的空间 */
       .app { padding: 12px; padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
-
-      /* 顶部精简 */
       .topbar { margin-bottom: 12px; }
       .title { font-size: 18px; }
       .btn { padding: 8px 12px; font-size: 13px; }
-
       .tabs-wrapper { margin-bottom: 12px; }
-      .tab { padding: 10px 14px; font-size: 14px; } /* 增大点击热区 */
-
-      /* 品种行情 */
+      .tab { padding: 10px 14px; font-size: 14px; } 
       .symRow { padding: 16px 12px; margin-bottom: 16px; border-radius: 16px; }
       .symName { font-size: 22px; gap: 8px; }
       .symBadge { font-size: 12px; padding: 4px 8px; }
       .iconBtn.huge-chart { width: 54px; height: 54px; font-size: 24px; border-radius: 12px; }
-
-      /* 布局流转为单列 */
       .main-grid { flex-direction: column; gap: 16px; }
       .card { padding: 16px; border-radius: 16px; }
-
-      /* 左侧重排 */
       .obTopStats { grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 16px; }
       .midPrice { font-size: 32px; margin: 12px 0 5px; }
-      
-      /* 表单交互优化：增加行高防误触 */
       .form-row { padding: 16px; margin-bottom: 10px; }
       .form-row label, .form-row input { font-size: 15px; }
-      input[type=range]::-webkit-slider-thumb { height: 26px; width: 26px; } /* 放大滑块头 */
-
-      /* 底部持仓卡片适配 */
+      input[type=range]::-webkit-slider-thumb { height: 26px; width: 26px; } 
       .posTop { flex-direction: column; gap: 12px; }
       .posTop > div:last-child { text-align: left; }
       .posGrid { grid-template-columns: repeat(3, 1fr); gap: 12px; }
@@ -234,16 +220,11 @@
         padding-bottom: env(safe-area-inset-bottom);
       }
       @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-      
       .modalHeader { padding: 16px 20px; font-size: 17px; }
       .modalBody { padding: 16px 20px; }
-      .select-item { padding: 18px 0; font-size: 15px; } /* 放大列表项热区 */
-      
-      /* 问卷项 */
+      .select-item { padding: 18px 0; font-size: 15px; } 
       .quiz-opts { flex-direction: column; gap: 10px; }
       .quiz-opt { padding: 14px; font-size: 14px; }
-
-      /* 错误弹窗（保持居中，但适配尺寸） */
       .error-popup { align-items: center; padding: 20px; }
       .error-popup-content { padding: 24px 20px; border-radius: 24px; width: 100%; animation: popUp 0.3s; }
       .error-popup-btn { padding: 14px; font-size: 15px; }
@@ -260,26 +241,6 @@
       <button class="error-popup-btn" onclick="$('errorPopup').classList.remove('show')">我知道了</button>
     </div>
   </div>
-
-  <script>
-    const API = {
-      submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
-        console.log("【API】执行下单:", {symbol, side, type, marginPct, leverage, calculatedLots, ...params});
-        return { success: true };
-      },
-      modifyPosition: async function(positionId, tpPrice, tpLots, slPrice, slLots) {
-        return { success: true };
-      },
-      lockPosition: async function(positionId) {
-        return { success: true };
-      },
-      getCalendarPnL: async function(year, month) {
-        let data = {};
-        for(let i=1; i<=31; i++) { if(Math.random() > 0.3) data[i] = (Math.random() * 200 - 80).toFixed(2); }
-        return data;
-      }
-    };
-  </script>
 
   <div class="app">
     <div class="topbar">
@@ -554,6 +515,53 @@
 
     let quizAnswers = {};
 
+    // 真正的与 Flask 交互的 API 对象
+    const API = {
+      submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
+        console.log("【前端发起请求】发送数据到后端:", {symbol, side, type, marginPct, leverage, calculatedLots, ...params});
+        try {
+          const response = await fetch('/api/v1/order', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              symbol: symbol,
+              side: side,
+              order_type: type,
+              margin_pct: marginPct,
+              leverage: leverage,
+              lots: calculatedLots,
+              details: params
+            })
+          });
+          const result = await response.json();
+          if (result.success) {
+            console.log("后端返回成功:", result);
+            return result;
+          } else {
+            alert("下单失败: " + result.error);
+            throw new Error(result.error);
+          }
+        } catch (error) {
+          console.error("请求异常:", error);
+          alert("网络请求异常，请检查后端服务是否正常运行。");
+          throw error;
+        }
+      },
+      modifyPosition: async function(positionId, tpPrice, tpLots, slPrice, slLots) {
+        return { success: true };
+      },
+      lockPosition: async function(positionId) {
+        return { success: true };
+      },
+      getCalendarPnL: async function(year, month) {
+        let data = {};
+        for(let i=1; i<=31; i++) { if(Math.random() > 0.3) data[i] = (Math.random() * 200 - 80).toFixed(2); }
+        return data;
+      }
+    };
+
     function updateCalculations() {
       const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = quantState;
       const usedMargin = availMargin * (marginPct / 100);
@@ -657,9 +665,13 @@
         quantState.leverage, 
         quantState.lots,
         { quiz: quizAnswers, ...formData }
-      ).then(() => {
-        addToPendingOrders($('symName').innerText, quantState.pendingSide, quantState.orderType, quantState.lots, formData);
-        alert(`指令发送成功！\n类型：${quantState.orderType}\n方向：${quantState.pendingSide}\n对应手数：${quantState.lots.toFixed(2)}手`);
+      ).then((res) => {
+        if(res && res.success) {
+          addToPendingOrders($('symName').innerText, quantState.pendingSide, quantState.orderType, quantState.lots, formData);
+          alert(`指令发送成功！\n类型：${quantState.orderType}\n方向：${quantState.pendingSide}\n对应手数：${quantState.lots.toFixed(2)}手`);
+        }
+      }).catch(err => {
+        console.error("提交订单中断", err);
       });
     }
 
@@ -833,10 +845,9 @@
       $('list-positions').classList.toggle('active', target === 'positions');
       $('list-orders').classList.toggle('active', target === 'orders');
     }
-    // 点击蒙版关闭弹窗的通用方法
+    
     function closeModal(e, id) { 
       if(e.target.id === id) {
-        // 为了配合动画，最好使用类名控制，此处保持简单，直接隐藏
         $(id).style.display = 'none'; 
       }
     }
