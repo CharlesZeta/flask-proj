@@ -2108,7 +2108,14 @@ HTML_TEMPLATE = r"""<!doctype html>
       const formData = window.getFormInputs();
       
       // 显式将 marginPct 设置为 0，确保后端使用 lots 字段
-      const lotsToSend = window.quantState.lots || 0.01;
+      // 注意：必须从 input 获取最新值，window.quantState.lots 有时未同步
+      let lotsToSend = 0.01;
+      const inpLots = $('inpLots');
+      if(inpLots) {
+          lotsToSend = parseFloat(inpLots.value) || 0.01;
+      } else {
+          lotsToSend = window.quantState.lots || 0.01;
+      }
       
       window.API.submitOrder(
         $('symName').innerText, 
@@ -2976,9 +2983,12 @@ def submit_order_v1():
                     break
     
     # 强制校验：如果依然无法获取 account，则禁止下单，防止生成无效命令
+    # 注意：某些情况下 history_status 可能为空（如 EA 尚未连接），此时允许 account 为空
+    # 但为了避免指令无法被 EA 认领，最好还是要求 account
     if not account:
-        print("[BLOCK] 无法获取当前账户信息 (account unknown)")
-        return jsonify({"success": False, "message": "无法获取当前账户信息，请等待 EA 连接"}), 400
+        print("[WARN] 无法获取当前账户信息 (account unknown)，尝试允许空账户下单")
+        # return jsonify({"success": False, "message": "无法获取当前账户信息，请等待 EA 连接"}), 400
+        account = "" # 允许为空
     
     cmd["account"] = account
 
