@@ -2471,12 +2471,24 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('pairMask').style.display = 'none';
       window.updateCalculations();
       
-      // Start quote polling
-      if(quoteInterval) clearInterval(quoteInterval);
-      window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {}); // Initial request
+      // 停止旧的轮询
+      if(quoteInterval) {
+          clearInterval(quoteInterval);
+          quoteInterval = null;
+      }
+      
+      // 立即发送一次报价请求
+      window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {}); 
+      
+      // 启动新的轮询
       quoteInterval = setInterval(() => {
           window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {});
       }, 1000);
+      
+      // 立即刷新页面数据，以便 latest_status 能拿到新 symbol 的数据
+      // 注意：由于后端是异步处理 quote，这里延迟一点点刷新可能更好，或者依赖每3秒的自动刷新
+      // 这里手动调一次 refreshData 也可以，但可能拿到的是旧数据
+      setTimeout(refreshData, 500);
     };
     
     // 自动刷新数据
