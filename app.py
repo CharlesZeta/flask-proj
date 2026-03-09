@@ -1818,11 +1818,14 @@ HTML_TEMPLATE = r"""<!doctype html>
       price: 0,           
       contractSize: 100,        
       pointSize: 0.01,          
-      marginPct: 10,
+      marginPct: 0, // 默认为0，防止后端错误地优先使用保证金计算手数
       leverage: 20,             
-      lots: 0,
+      lots: 0.01,   // 默认 0.01
       orderType: 'limit_tpsl',
-      pendingSide: '' 
+      pendingSide: '',
+      // 新增：价格停滞检测状态
+      lastPriceForSignal: 0,
+      priceStagnationCount: 0
     };
 
     let quizAnswers = {};
@@ -2103,13 +2106,16 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('quizMask').style.display = 'none';
       const formData = window.getFormInputs();
       
+      // 显式将 marginPct 设置为 0，确保后端使用 lots 字段
+      const lotsToSend = window.quantState.lots || 0.01;
+      
       window.API.submitOrder(
         $('symName').innerText, 
         window.quantState.pendingSide, 
         window.quantState.orderType, 
-        window.quantState.marginPct, 
+        0, // marginPct
         window.quantState.leverage, 
-        window.quantState.lots,
+        lotsToSend,
         { quiz: quizAnswers, ...formData }
       ).then((res) => {
         if(res.success) {
@@ -2539,6 +2545,7 @@ HTML_TEMPLATE = r"""<!doctype html>
                 
                 // 尝试从持仓或历史数据更新当前价格（如果有）
                 let priceUpdated = false;
+                let currentBid = 0;
                 
                 // 优先使用最新的 QUOTE_DATA
                 if(data.latest_quote) {
@@ -2548,6 +2555,7 @@ HTML_TEMPLATE = r"""<!doctype html>
                         console.warn(`[Warn] Received quote for ${quote.symbol} but expected ${currentSym}`);
                     } else {
                         window.quantState.price = quote.bid;
+                        currentBid = quote.bid;
                         $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
                         
                         // 更新右侧面板双报价
@@ -2555,20 +2563,6 @@ HTML_TEMPLATE = r"""<!doctype html>
                         if($('quoteAsk')) $('quoteAsk').innerText = fmtNum(quote.ask, currentSym === 'XAUUSD' ? 2 : 4);
                         
                         priceUpdated = true;
-                        
-                        // 更新信号灯时间戳 (1.5s 阈值)
-                        const nowTs = Math.floor(Date.now() / 1000);
-                        const diff = nowTs - quote.ts;
-                        const dot = $('latencySignal');
-                        if(dot) {
-                            if(diff <= 1.5) { // 用户要求 1.5s
-                                dot.className = 'signal-dot green'; dot.title = '实时 (<1.5s)';
-                            } else if(diff <= 10) {
-                                dot.className = 'signal-dot yellow'; dot.title = '延迟 (1.5-10s)';
-                            } else {
-                                dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
-                            }
-                        }
                     }
                 }
 
@@ -2577,25 +2571,47 @@ HTML_TEMPLATE = r"""<!doctype html>
                     const pos = data.positions.find(p => p.symbol === currentSym);
                     if(pos) {
                         window.quantState.price = pos.current_price;
+                        currentBid = pos.current_price;
                         $('midPriceText').innerText = fmtNum(pos.current_price, currentSym === 'XAUUSD' ? 2 : 4);
+                        priceUpdated = true;
                     }
                 }
                 
-                // 信号灯逻辑 (Bug 3) - 只有在没有 quote 数据时才使用 status 的 ts 作为备选
-                if (!priceUpdated) {
+                // --- 新版红绿灯机制 (基于价格停滞检测) ---
+                if (currentBid > 0) {
+                     // 如果价格与上次完全一致
+                     if (currentBid === window.quantState.lastPriceForSignal) {
+                         window.quantState.priceStagnationCount++;
+                     } else {
+                         // 价格变动，重置计数器
+                         window.quantState.priceStagnationCount = 0;
+                         window.quantState.lastPriceForSignal = currentBid;
+                     }
+                     
+                     const count = window.quantState.priceStagnationCount;
+                     const dot = $('latencySignal');
+                     if(dot) {
+                         // 连续5次 (约15s) -> 红灯
+                         if(count >= 5) {
+                             dot.className = 'signal-dot red'; 
+                             dot.title = '断连 (价格停滞 >15s)';
+                         } 
+                         // 连续3次 (约9s) -> 黄灯
+                         else if(count >= 3) {
+                             dot.className = 'signal-dot yellow'; 
+                             dot.title = '延迟 (价格停滞 >9s)';
+                         } 
+                         else {
+                             dot.className = 'signal-dot green'; 
+                             dot.title = '实时';
+                         }
+                     }
+                } else {
+                    // 无价格数据 -> 红灯
                     const dot = $('latencySignal');
-                    if(dot && data.ts) {
-                        const nowTs = Math.floor(Date.now() / 1000);
-                        const diff = nowTs - data.ts;
-                        if(diff <= 3) { // Status 频率较低，放宽到 3s
-                            dot.className = 'signal-dot green'; dot.title = '实时 (<3s)';
-                        } else if(diff <= 10) {
-                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (3-10s)';
-                        } else {
-                            dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
-                        }
-                    } else if(dot) {
-                        dot.className = 'signal-dot red'; dot.title = '无信号';
+                    if(dot) {
+                        dot.className = 'signal-dot red'; 
+                        dot.title = '无信号';
                     }
                 }
                 
