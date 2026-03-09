@@ -30,6 +30,16 @@ cmd_counter = 0
 paused = False
 pause_lock = threading.RLock()
 
+def generate_unique_cmd_id():
+    """生成全局唯一且单调递增的命令 ID"""
+    global cmd_counter
+    # 使用毫秒级时间戳 + 计数器，确保即使重启也不会重复 (假设重启间隔 > 1ms)
+    # 格式: TS_COUNTER (例如 1715000000000_1)
+    ms = int(time.time() * 1000)
+    with commands_lock:
+        cmd_counter += 1
+        return f"{ms}_{cmd_counter}"
+
 # ==================== 产品规则表 ====================
 PRODUCT_SPECS = {
     # 1. 贵金属 / 原油
@@ -2898,7 +2908,7 @@ def submit_order_v1():
         # 构造简单命令对象
         now = int(time.time())
         cmd = {
-            "id": "q_" + str(cmd_counter), # 添加前缀以便过滤
+            "id": "q_" + generate_unique_cmd_id(), # 添加前缀以便过滤
             "nonce": generate_nonce(),
             "created_at": now,
             "ttl_sec": 10, # quote 有效期短
@@ -2914,7 +2924,7 @@ def submit_order_v1():
         
         with commands_lock:
             commands.append(cmd)
-            cmd_counter += 1
+            # cmd_counter 已经在 generate_unique_cmd_id 中增加
             
         print(f"[ORDER][QUOTE] queued id={cmd['id']}")
         return jsonify({"success": True, "message": "报价请求已发送", "order": cmd})
@@ -2959,7 +2969,7 @@ def submit_order_v1():
     ttl_sec = int(ttl_mins * 60)
     
     cmd = {
-        "id": str(cmd_counter),
+        "id": generate_unique_cmd_id(),
         "nonce": generate_nonce(),
         "created_at": now,
         "ttl_sec": ttl_sec,
@@ -3019,7 +3029,7 @@ def submit_order_v1():
     
     with commands_lock:
         commands.append(cmd)
-        cmd_counter += 1
+        # cmd_counter 已在 generate_unique_cmd_id 中增加
     
     print(f"[ORDER][QUEUE] action={cmd.get('action')} symbol={symbol} lots={lots} account={account} id={cmd['id']}")
     return jsonify({
@@ -3043,11 +3053,10 @@ def modify_position_v1():
     sl = float(data.get('slPrice', 0) or 0)
     
     # 构造 modify 命令
-    global cmd_counter
     now = int(time.time())
     
     cmd = {
-        "id": str(cmd_counter),
+        "id": generate_unique_cmd_id(),
         "nonce": generate_nonce(),
         "created_at": now,
         "ttl_sec": 60,
@@ -3066,7 +3075,7 @@ def modify_position_v1():
 
     with commands_lock:
         commands.append(cmd)
-        cmd_counter += 1
+        # cmd_counter 已在 generate_unique_cmd_id 中增加
         
     return jsonify({"success": True, "message": "修改指令已发送"})
 
@@ -3316,8 +3325,6 @@ def receive_tick():
 def send_command():
     if is_restricted_time():
         return redirect(url_for("index"))
-
-    global cmd_counter
     
     # 使用归一化函数处理字段
     account_raw = request.form.get("account", "")
@@ -3399,7 +3406,7 @@ def send_command():
     # 命令对象 - 关键：account 要么不传，要么传真实值，严禁传空字符串
     now = int(time.time())
     cmd = {
-        "id": str(cmd_counter),
+        "id": generate_unique_cmd_id(),
         "nonce": generate_nonce(),
         "created_at": now,
         "ttl_sec": 10,
@@ -3443,7 +3450,7 @@ def send_command():
 
     with commands_lock:
         commands.append(cmd)
-        cmd_counter += 1
+        # cmd_counter 已在 generate_unique_cmd_id 中增加
 
     return redirect(url_for("index"))
 
