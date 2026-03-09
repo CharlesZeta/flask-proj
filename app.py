@@ -248,8 +248,9 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
                 desc = parsed.get("desc", "")
                 
                 # 如果是交易执行报告 (ok=True/False 且有 cmd_id)，则持久化保存
-                # 排除 QUOTE_DATA 和 INTERNAL 类型
-                if desc != "QUOTE_DATA" and record.get("method") != "INTERNAL" and parsed.get("cmd_id"):
+                # 排除 QUOTE_DATA 和 INTERNAL 类型，以及 quote 指令报告(q_开头)
+                cmd_id_str = str(parsed.get("cmd_id", ""))
+                if desc != "QUOTE_DATA" and record.get("method") != "INTERNAL" and parsed.get("cmd_id") and not cmd_id_str.startswith("q_"):
                     trade_record = {
                         "received_at": record.get("received_at"),
                         "cmd_id": parsed.get("cmd_id"),
@@ -2691,7 +2692,11 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     function updatePendingOrdersList(commands) {
         const list = $('list-orders');
-        if(!commands || commands.length === 0) {
+        
+        // 过滤掉 quote 类型的指令 (这些是内部轮询指令，不应展示给用户)
+        const visibleCommands = (commands || []).filter(cmd => cmd.action !== 'quote');
+
+        if(visibleCommands.length === 0) {
             list.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无当前委托挂单</div>';
             const tab = document.querySelectorAll('.segTabs .seg')[1];
             if(tab) tab.innerHTML = `当前委托 (0)`;
@@ -2699,7 +2704,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         }
 
         let html = '';
-        commands.forEach(cmd => {
+        visibleCommands.forEach(cmd => {
             const sideClass = (cmd.side && cmd.side.toLowerCase() === 'buy') ? 'buy' : 'sell';
             const timeStr = new Date(cmd.created_at * 1000).toLocaleTimeString();
             
@@ -2724,7 +2729,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         list.innerHTML = html;
         
         const tab = document.querySelectorAll('.segTabs .seg')[1];
-        if(tab) tab.innerHTML = `当前委托 (${commands.length})`;
+        if(tab) tab.innerHTML = `当前委托 (${visibleCommands.length})`;
     }
 
     async function fetchHistoryTrades() {
@@ -2746,6 +2751,9 @@ HTML_TEMPLATE = r"""<!doctype html>
 
         let html = '';
         trades.forEach(trade => {
+            // 过滤掉 quote 指令 (新版 ID 以 q_ 开头)
+            if(String(trade.cmd_id).startsWith('q_')) return;
+            
             // 解析 message JSON
             let detail = "";
             try {
@@ -2883,7 +2891,7 @@ def submit_order_v1():
         # 构造简单命令对象
         now = int(time.time())
         cmd = {
-            "id": str(cmd_counter),
+            "id": "q_" + str(cmd_counter), # 添加前缀以便过滤
             "nonce": generate_nonce(),
             "created_at": now,
             "ttl_sec": 10, # quote 有效期短
@@ -3193,8 +3201,9 @@ def mt4_commands():
 @app.route("/api/pending_commands", methods=["GET"])
 def api_pending_commands():
     with commands_lock:
-        # 返回副本，避免并发问题
-        return jsonify({"commands": list(commands)})
+        # 返回副本，避免并发问题，并过滤掉 quote 指令
+        visible_commands = [c for c in commands if c.get("action") != "quote"]
+        return jsonify({"commands": visible_commands})
 
 @app.route("/web/api/mt4/status", methods=["POST"])
 def mt4_status():
