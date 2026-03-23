@@ -1068,640 +1068,299 @@ HTML_TEMPLATE = r"""<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="format-detection" content="telephone=no" />
-  <meta name="theme-color" content="#ffffff" />
-  
-  <title>量化交易终端 - 移动版</title>
+  <title>量化交易终端</title>
   <style>
     :root {
-      --bg: #f5f7fa;
-      --card: #ffffff;
-      --text: #1a1e23;
-      --muted: #848e9c;
-      --line: #eaecef;
-      --green: #0ecb81;
-      --red: #f6465d;
-      --yellow: #f0b90b;
-      --chip: #f3f5f7;
-      --shadow: 0 0.5rem 1.5rem rgba(0,0,0,0.06);
-      --radius: 1rem;
-      --safe-bottom: env(safe-area-inset-bottom);
+      --blue: #007aff;
+      --red: #ff3b30;
+      --green: #34c759;
+      --bg: #ffffff;
+      --text: #333333;
+      --muted: #8e8e93;
+      --line: #c6c6c8;
+      --nav-bg: #f8f8f8;
     }
-
-    /* CSS Reset (移动端优化) */
-    * { 
-      box-sizing: border-box; 
-      -webkit-tap-highlight-color: transparent; 
-      outline: none;
-    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; outline: none; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); padding-bottom: 60px; padding-top: 50px; }
     
-    html {
-      font-size: 16px; /* 基准字号 */
-      -webkit-text-size-adjust: 100%; /* 禁止字体自动缩放 */
-    }
-
-    body {
-      margin: 0; 
-      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-      color: var(--text); 
-      background: var(--bg); 
-      line-height: 1.5;
-      overflow-x: hidden; /* 防止横向滚动 */
-      width: 100%;
-      overscroll-behavior-y: none; /* 禁用下拉刷新效果，模拟原生App */
-    }
-
-    /* 消除点击延迟 */
-    button, a, input, [role="button"] {
-      touch-action: manipulation;
-    }
-
-    /* 容器布局 */
-    .app { 
-      width: 100%;
-      max-width: 62.5rem; /* 1000px */
-      margin: 0 auto; 
-      min-height: 100vh; 
-      padding: 1.25rem; /* 20px */
-      padding-bottom: calc(1.25rem + var(--safe-bottom));
-    }
-
-    /* 顶部 */
-    .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
-    .title { font-size: 1.375rem; font-weight: 800; }
-    .btn { 
-      border: 1px solid var(--line); 
-      background: #fff; 
-      border-radius: 0.5rem; 
-      padding: 0.5rem 1rem; 
-      font-weight: 600; 
-      min-height: 2.75rem; /* 44px 最小触控区域 */
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.9375rem;
-      cursor: pointer;
-    }
-    /* 移除 hover-only，改为 active */
-    .btn:active { background: var(--chip); }
-
-    /* 顶部分类 Tabs */
-    .tabs-wrapper { 
-      overflow-x: auto; 
-      white-space: nowrap; 
-      margin-bottom: 1.25rem; 
-      -webkit-overflow-scrolling: touch; 
-      padding-bottom: 0.3125rem; 
-      scrollbar-width: none; /* Firefox */
-    }
-    .tabs-wrapper::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+    .top-bar { position: fixed; top: 0; left: 0; right: 0; height: 50px; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 15px; font-size: 18px; font-weight: bold; z-index: 100; }
+    .top-bar-title { flex: 1; }
+    .top-bar-actions { display: flex; gap: 15px; font-size: 24px; color: var(--blue); cursor: pointer; }
+    .top-bar-actions span:active { opacity: 0.7; }
+    .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; height: 55px; background: var(--nav-bg); border-top: 1px solid var(--line); display: flex; justify-content: space-around; align-items: center; z-index: 100; padding-bottom: env(safe-area-inset-bottom); }
+    .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--muted); font-size: 10px; cursor: pointer; flex: 1; }
+    .nav-item.active { color: var(--blue); }
+    .nav-icon { font-size: 22px; margin-bottom: 2px; }
     
-    .tabs { display: inline-flex; gap: 0.5rem; }
-    .tab { 
-      padding: 0.5rem 1rem; 
-      border-radius: 0.5rem; 
-      background: transparent; 
-      color: var(--muted); 
-      font-weight: 700; 
-      border: none; 
-      font-size: 0.9375rem; /* 15px */
-      min-height: 2.75rem; /* 44px */
-      transition: 0.2s;
-      cursor: pointer;
-    }
-    .tab.active { background: var(--card); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-
-    /* 行情头 */
-    .symRow { 
-      display: grid;
-      grid-template-columns: 1fr auto 1fr;
-      align-items: center;
-      margin-bottom: 1.25rem; background: var(--card); padding: 1.25rem; 
-      border-radius: var(--radius); box-shadow: var(--shadow); 
-      border: 1px solid var(--line); 
-    }
-    .symLeftTime { font-family: monospace; font-weight: 700; color: var(--muted); font-size: 2rem; justify-self: start; }
-    .symCenter { display: flex; flex-direction: column; align-items: center; justify-self: center; gap: 0.25rem; }
-    .symName { display: flex; align-items: center; gap: 0.625rem; font-size: 1.625rem; font-weight: 800; }
-    .symBadge { 
-      font-size: 0.875rem; padding: 0.25rem 0.5rem; 
-      border-radius: 0.375rem; background: var(--text); color: #fff; 
-      font-weight: 700; min-height: 2rem; display: inline-flex; align-items: center;
-      cursor: pointer;
-    }
-    .symRight { display: flex; align-items: center; justify-self: end; }
-    .iconBtn.huge-chart { 
-      width: 5rem; height: 5rem; border-radius: 1rem; 
-      border: 2px solid var(--line); background: #fff; 
-      display: grid; place-items: center; font-size: 2.25rem; 
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: 0.2s; 
-      cursor: pointer;
-    }
-    .iconBtn.huge-chart:active { transform: scale(0.95); }
-
-    /* 核心布局 */
-    .main-grid { display: flex; gap: 1.25rem; align-items: stretch; }
-    .col-left { flex: 1.2; display: flex; flex-direction: column; gap: 1.25rem; }
-    .col-right { flex: 1; display: flex; flex-direction: column; gap: 1.25rem; }
-    .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.5rem; }
-
-    /* 数据统计 */
-    .obTopStats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
-    .obStatItem { display: flex; flex-direction: column; gap: 0.25rem; }
-    .obStatLabel { font-size: 0.875rem; /* >= 14px */ font-weight: 600; color: var(--muted); }
-    .obStatVal { font-weight: 800; font-size: 1rem; color: var(--text); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
     
-    .midPrice { text-align: center; margin: 1.25rem 0 0.3125rem; font-size: 2.25rem; font-weight: 800; letter-spacing: -1px; }
-    .midSub { display: flex; justify-content: center; align-items: center; gap: 0.5rem; color: var(--muted); font-weight: 600; font-size: 0.875rem; margin-bottom: 1.5rem; }
+    /* Quotes Tab */
+    .q-row { padding: 10px 15px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; cursor: pointer; position: relative; }
+    .q-row.edit-mode .q-left { margin-left: 30px; }
+    .q-delete-btn { position: absolute; left: -30px; top: 50%; transform: translateY(-50%); color: var(--red); font-size: 24px; transition: 0.3s; opacity: 0; pointer-events: none; }
+    .q-row.edit-mode .q-delete-btn { left: 10px; opacity: 1; pointer-events: auto; }
+    .q-left { display: flex; flex-direction: column; transition: 0.3s; }
+    .q-sym { font-size: 16px; font-weight: bold; }
+    .q-time, .q-spread { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .q-right { display: flex; flex-direction: column; align-items: flex-end; }
+    .q-prices { display: flex; gap: 15px; font-size: 18px; font-weight: bold; }
+    .q-prices .blue { color: var(--blue); }
+    .q-prices .red { color: var(--red); }
+    .q-hl { display: flex; gap: 10px; font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    /* Trade Tab */
+    .trade-header { padding: 10px 15px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+    .sym-title { font-size: 20px; font-weight: bold; }
+    .sym-desc { font-size: 14px; color: var(--muted); }
+    .trade-type { text-align: center; padding: 15px; font-size: 16px; font-weight: bold; border-bottom: 1px solid var(--line); cursor: pointer; }
     
-    .signal-dot { width: 0.625rem; height: 0.625rem; border-radius: 50%; display: inline-block; transition: background 0.3s; }
-    .signal-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-    .signal-dot.yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
-    .signal-dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
-
-    /* 止损计算器 */
-    .sl-calculator { background: #fafbfc; border: 1px solid var(--line); border-radius: 0.75rem; padding: 1rem; margin-top: auto; }
-    .sl-title { font-size: 0.875rem; font-weight: 800; margin-bottom: 0.75rem; color: var(--text); display: flex; justify-content: space-between; align-items: flex-end;}
-    .sl-row { display: flex; justify-content: space-between; margin: 0.5rem 0; font-size: 0.875rem; font-variant-numeric: tabular-nums; }
-    .sl-row .k { color: var(--muted); font-weight: 600; }
-    .sl-row .v { font-weight: 800; font-size: 0.875rem; color: var(--text); }
-
-    /* 表单区 */
-    .form-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; }
-    .chips { display: flex; gap: 0.5rem; }
-    .chip { 
-      padding: 0.5rem 0.75rem; border-radius: 0.5rem; background: var(--chip); 
-      font-weight: 700; font-size: 0.875rem; border: 1px solid transparent; 
-      min-height: 2rem; display: inline-flex; align-items: center;
-      cursor: pointer;
-    }
-    .chip.primary { background: var(--text); color: #fff; }
+    .lots-stepper { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid var(--line); }
+    .l-btn { color: var(--blue); font-weight: bold; font-size: 16px; padding: 5px; cursor: pointer; min-width: 40px; text-align: center; }
+    .lots-stepper input { text-align: center; font-size: 22px; font-weight: bold; border: none; outline: none; width: 80px; color: var(--text); }
     
-    .form-row { 
-      display: flex; justify-content: space-between; align-items: center; 
-      background: var(--chip); border-radius: 0.625rem; padding: 0.875rem 1rem; 
-      margin-bottom: 0.75rem; border: 1px solid transparent; transition: 0.2s; 
-      min-height: 3.5rem; /* 56px touch target */
-      cursor: pointer;
-    }
-    .form-row:focus-within { background: #fff; border-color: var(--text); }
-    .form-row label { color: var(--muted); font-weight: 600; font-size: 0.875rem; white-space: nowrap; }
-    .form-row input { 
-      border: none; background: transparent; text-align: right; width: 100%; margin-left: 1rem; 
-      font-size: 1rem; /* >= 16px to prevent zoom */
-      font-weight: 800; color: var(--text); outline: none; font-family: inherit; 
-    }
-    .form-row .value-text { font-size: 1rem; font-weight: 800; color: var(--text); }
-
-    /* 滑块 */
-    .range-wrap { margin: 1.25rem 0 1.5rem; padding: 0; }
-    .range-header { display: flex; justify-content: space-between; margin-bottom: 0.75rem; font-size: 0.875rem; font-weight: 700; color: var(--muted); align-items: center;}
-    input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; padding: 0.625rem 0; margin: 0; min-height: 2.75rem; cursor: pointer; } /* 44px */
-    input[type=range]:focus { outline: none; }
-    input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 0.375rem; background: linear-gradient(to right, var(--text) 0%, var(--text) var(--track-fill, 10%), var(--line) var(--track-fill, 10%), var(--line) 100%); border-radius: 3px; }
-    input[type=range]::-webkit-slider-thumb { height: 1.5rem; width: 1.5rem; border-radius: 50%; background: #fff; border: 4px solid var(--text); -webkit-appearance: none; margin-top: -0.5625rem; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
-
-    /* ========== 交易面板新样式 (图1/图3风格) ========== */
-    .trade-card { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; background: #fff; }
+    .trade-prices { display: flex; justify-content: space-around; padding: 20px 15px; font-size: 32px; font-weight: bold; }
+    .trade-prices .red { color: var(--red); }
+    .trade-prices .blue { color: var(--blue); }
     
-    .trade-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; }
-    .trade-badges { display: flex; gap: 0.5rem; align-items: center; }
-    .trade-balance { font-size: 0.875rem; font-weight: 600; color: var(--muted); }
-    .trade-balance .value { color: var(--text); font-weight: 800; font-family: monospace; }
-
-    /* 交易类型标题 */
-    .trade-type-title { 
-      font-size: 1.125rem; font-weight: 800; color: var(--text); 
-      margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between;
-      cursor: pointer;
-    }
-
-    /* 手数步进器 */
-    .stepper-row { 
-      display: flex; align-items: center; justify-content: space-between; 
-      background: #f5f7fa; border-radius: 0.75rem; padding: 0.25rem;
-      margin-bottom: 0.75rem;
-    }
-    .step-btn { 
-      border: none; background: transparent; color: #3b82f6; 
-      font-weight: 700; font-size: 0.875rem; padding: 0.5rem 0.75rem; 
-      cursor: pointer; min-width: 3rem;
-    }
-    .step-btn:active { opacity: 0.7; }
-    #inpLots { 
-      flex: 1; text-align: center; border: none; background: transparent; 
-      font-size: 1.5rem; font-weight: 800; color: var(--text); 
-      outline: none; width: 4rem; padding: 0;
-    }
-
-    /* 双报价行 */
-    .quote-row { display: flex; justify-content: space-between; margin-bottom: 1rem; gap: 1rem; }
-    .quote-box { font-size: 1.25rem; font-weight: 800; font-family: monospace; letter-spacing: -0.5px; }
-    .quote-box.bid { color: #2563eb; } /* 蓝色系 */
-    .quote-box.ask { color: #2563eb; text-align: right; }
-
-    /* 通用简易表单行 (价格, 期限) */
-    .form-row-simple { 
-      display: flex; justify-content: space-between; align-items: center; 
-      padding: 0.75rem 0; border-bottom: 1px solid #f3f4f6; 
-      font-size: 0.9375rem;
-    }
-    .form-row-simple label { color: var(--muted); font-weight: 600; }
-    .form-row-simple input { 
-      text-align: right; border: none; outline: none; background: transparent; 
-      font-size: 1rem; font-weight: 700; color: var(--text); width: 60%;
-    }
-    .form-row-simple .static-val { font-weight: 700; color: var(--text); }
-
-    /* 彩色输入行 (止盈/止损) */
-    .form-row-colored { 
-      display: flex; justify-content: space-between; align-items: center; 
-      padding: 0 1rem; height: 3rem; border-radius: 0.5rem; 
-      margin-bottom: 0.5rem; 
-    }
-    .form-row-colored.green { background: #ecfdf5; }
-    .form-row-colored.green label { color: #059669; }
-    .form-row-colored.green input { color: #059669; }
+    .t-row { display: flex; align-items: center; padding: 10px 15px; border-bottom: 1px solid var(--line); }
+    .t-btn { color: var(--blue); font-size: 24px; width: 40px; text-align: center; cursor: pointer; font-weight: 300; }
+    .t-input-wrap { flex: 1; display: flex; justify-content: center; align-items: center; gap: 10px; }
+    .t-input-wrap .t-label { color: var(--muted); font-size: 14px; }
+    .t-input-wrap input { font-size: 18px; border: none; outline: none; width: 100px; text-align: center; font-weight: bold; }
     
-    .form-row-colored.red { background: #fef2f2; }
-    .form-row-colored.red label { color: #dc2626; }
-    .form-row-colored.red input { color: #dc2626; }
-
-    .form-row-colored label { font-weight: 700; font-size: 0.9375rem; }
-    .form-row-colored .input-wrap { display: flex; align-items: center; gap: 0.5rem; flex: 1; justify-content: flex-end; }
-    .form-row-colored input { 
-      background: transparent; border: none; outline: none; text-align: right; 
-      font-size: 1.125rem; font-weight: 800; width: 100%; 
-    }
-    .mini-add { 
-      width: 1.5rem; height: 1.5rem; border-radius: 50%; border: none; 
-      background: rgba(0,0,0,0.05); color: inherit; font-weight: 700; 
-      display: flex; align-items: center; justify-content: center; cursor: pointer; 
-    }
-
-    /* 按钮组 */
-    .cta-group { display: flex; gap: 1rem; margin-top: 1rem; }
-    .cta { 
-      flex: 1; border: none; border-radius: 0.75rem; 
-      height: 3.25rem; font-size: 1rem; font-weight: 800; color: #fff;
-      display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.1); cursor: pointer;
-    }
-    .cta:active { transform: scale(0.98); }
-    .cta.buy { background: var(--green); box-shadow: 0 4px 12px rgba(14, 203, 129, 0.25); }
-    .cta.sell { background: var(--red); box-shadow: 0 4px 12px rgba(246, 70, 93, 0.25); }
-
-    /* 按钮组 */
-    .cta-group { display: flex; gap: 0.75rem; margin-top: 0.625rem;}
-    .cta { 
-      border: none; flex: 1; padding: 1rem; border-radius: 0.75rem; 
-      color: #fff; font-size: 1rem; font-weight: 800; 
-      transition: transform 0.1s; 
-      min-height: 3.5rem; /* 56px */
-      display: flex; align-items: center; justify-content: center;
-      cursor: pointer;
-    }
-    .cta:active { transform: scale(0.98); }
-    .cta.buy { background: var(--green); }
-    .cta.sell { background: var(--red); }
-
-    /* 底部列表 */
-    .bottom-section { margin-top: 2rem; }
-    .segTabs { display: flex; gap: 1.5rem; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; }
-    .seg { 
-      padding: 0.75rem 0.25rem; color: var(--muted); font-weight: 700; font-size: 1rem; 
-      position: relative; min-height: 2.75rem; display: flex; align-items: center;
-      cursor: pointer;
-    }
-    .seg.active { color: var(--text); }
-    .seg.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--text); }
+    .sl-tp-row { display: flex; border-bottom: 1px solid var(--line); }
+    .t-col { flex: 1; display: flex; align-items: center; padding: 10px 5px; }
+    .sl-col { border-bottom: 2px solid var(--red); margin-right: 5px; }
+    .tp-col { border-bottom: 2px solid var(--green); margin-left: 5px; }
+    .t-col input { flex: 1; width: 100%; text-align: center; border: none; outline: none; font-size: 18px; font-weight: bold; }
     
-    .listCard { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); display: none; }
-    .listCard.active { display: block; }
-    .posItem { padding: 1.25rem; }
-    .posTop { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
-    .posTitle { display: flex; gap: 0.5rem; align-items: center; font-weight: 800; font-size: 1.125rem; }
-    .sideTag { padding: 0.125rem 0.5rem; border-radius: 0.375rem; font-size: 0.875rem; font-weight: 800; border: 1px solid; background: #fff; }
-    .sideTag.buy { color: var(--green); border-color: rgba(37,185,122,.3); }
-    .sideTag.sell { color: var(--red); border-color: rgba(239,77,92,.3); }
-    .posGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
-    .mini { color: var(--muted); font-size: 0.875rem; /* >= 14px */ font-weight: 600; margin-bottom: 0.25rem; }
-    .big { font-weight: 800; font-size: 1rem; }
-    .posActions { display: flex; gap: 0.75rem; }
-    .ghost { 
-      flex: 1; border: 1px solid var(--line); background: transparent; 
-      border-radius: 0.5rem; padding: 0.625rem; font-weight: 700; 
-      min-height: 2.75rem; display: flex; align-items: center; justify-content: center;
-      transition: 0.2s; 
-      cursor: pointer;
-    }
-    .ghost:active { background: var(--chip); }
-
-    /* 弹窗/动作面板 (Action Sheet) */
-    .modalMask { 
-      position: fixed; inset: 0; background: rgba(0,0,0,.5); 
-      display: none; align-items: center; justify-content: center; 
-      padding: 1.25rem; z-index: 100; backdrop-filter: blur(2px); 
-    }
-    .modal { 
-      width: min(27.5rem, 100%); background: #fff; border-radius: 1.25rem; 
-      overflow: hidden; box-shadow: 0 1.25rem 2.5rem rgba(0,0,0,0.1); 
-      animation: pop 0.2s ease-out; display: flex; flex-direction: column; max-height: 90vh; 
-    }
-    @keyframes pop { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .t-duration { padding: 15px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .t-duration .t-label { color: var(--muted); }
+    .t-duration .t-val { color: var(--text); }
     
-    .modalHeader { 
-      padding: 1.25rem; display: flex; justify-content: space-between; align-items: center; 
-      border-bottom: 1px solid var(--line); font-weight: 800; font-size: 1.125rem; flex-shrink: 0; 
-      min-height: 3.5rem;
-    }
-    .modalBody { padding: 1.25rem; overflow-y: auto; flex-grow: 1; }
-    .select-item { 
-      padding: 1rem; border-bottom: 1px solid var(--line); font-weight: 700; 
-      display: flex; justify-content: space-between; align-items: center; min-height: 3.5rem;
-      cursor: pointer;
-    }
-    .select-item:last-child { border-bottom: none; }
-    .select-item:active { background: var(--chip); }
-    .select-item.active { color: var(--text); }
+    .trade-actions { display: flex; padding: 15px; gap: 10px; margin-top: 10px; }
+    .btn-sell, .btn-buy, .btn-place { flex: 1; padding: 15px; border: none; border-radius: 5px; font-size: 16px; font-weight: bold; color: #fff; cursor: pointer; }
+    .btn-sell { background: var(--red); }
+    .btn-buy { background: var(--blue); }
+    .btn-place { background: var(--text); }
+    .btn-sell:active, .btn-buy:active, .btn-place:active { opacity: 0.8; }
 
-    /* 3. 移动端媒体查询 (320-428px) */
-    @media (max-width: 768px) {
-      .app { padding: 1rem; padding-bottom: calc(1rem + var(--safe-bottom)); }
-      
-      /* 单列流式布局 */
-      .main-grid { flex-direction: column; gap: 1rem; }
-      .col-left, .col-right { gap: 1rem; }
-      
-      /* 底部动作面板模式 */
-      .modalMask { align-items: flex-end; padding: 0; }
-      .modal { 
-        width: 100%; max-width: 100%; 
-        border-radius: 1.5rem 1.5rem 0 0; 
-        margin: 0; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); 
-        padding-bottom: var(--safe-bottom);
-      }
-      @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-      
-      /* 字体与间距微调 */
-      .title { font-size: 1.25rem; }
-      .midPrice { font-size: 2rem; }
-      .posGrid { grid-template-columns: repeat(2, 1fr); }
-      
-      /* 1px 边框优化 */
-      .form-row, .btn, .tab, .cta, .ghost, .symRow, .card, .sl-calculator {
-        border-width: 0.0625rem; /* fallback */
-      }
-      @media (-webkit-min-device-pixel-ratio: 2) {
-        .form-row, .btn, .tab, .cta, .ghost, .symRow, .card, .sl-calculator { border-width: 0.5px; }
-      }
-    }
-
-    /* 问卷样式 */
-    .quiz-item { margin-bottom: 1.5rem; }
-    .quiz-q { font-size: 0.9375rem; font-weight: 800; margin-bottom: 0.75rem; color: var(--text); }
-    .quiz-opts { display: flex; gap: 0.75rem; flex-direction: column; }
-    .quiz-opt { 
-      flex: 1; padding: 0.75rem; border: 1px solid var(--line); border-radius: 0.625rem; 
-      text-align: center; font-weight: 700; transition: 0.2s; background: var(--chip); 
-      min-height: 3rem; display: flex; align-items: center; justify-content: center;
-      cursor: pointer;
-    }
-    .quiz-opt.selected { background: var(--text); color: #fff; border-color: var(--text); }
-
-    /* 日历样式 */
-    .cal-header { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-weight: 800; color: var(--muted); font-size: 0.875rem; margin-bottom: 0.5rem; }
-    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-    .cal-day { 
-      border: 1px solid var(--line); border-radius: 0.5rem; padding: 0.25rem; text-align: center; 
-      min-height: 3.5rem; display: flex; flex-direction: column; justify-content: space-between; 
-    }
-    .cal-day.empty { border: none; background: transparent; }
-    .cal-date { font-weight: 800; font-size: 0.875rem; color: var(--text); }
-    .cal-pnl { font-size: 0.75rem; font-weight: 800; margin-top: 0.25rem; }
-
-    /* 错误弹窗 */
-    .error-popup { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(4px); }
-    .error-popup.show { display: flex; }
-    .error-popup-content { background: #fff; border-radius: 1.25rem; padding: 1.5rem; width: min(22.5rem, 85%); text-align: center; box-shadow: 0 1.25rem 3.75rem rgba(0,0,0,0.3); }
-    .error-popup-icon { width: 4rem; height: 4rem; background: linear-gradient(135deg, #fee2e2, #fecaca); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.25rem; font-size: 2rem; }
-    .error-popup-title { font-size: 1.25rem; font-weight: 800; color: #1f2937; margin-bottom: 1rem; }
-    .error-popup-list { text-align: left; background: #f9fafb; border-radius: 0.75rem; padding: 1rem; margin-bottom: 1.25rem; max-height: 12.5rem; overflow-y: auto; }
-    .error-popup-item { display: flex; align-items: center; padding: 0.5rem 0; color: #dc2626; font-size: 0.875rem; font-weight: 600; border-bottom: 1px solid #e5e7eb; }
-    .error-popup-item:last-child { border-bottom: none; }
-    .error-popup-btn { 
-      background: linear-gradient(135deg, #1f2937, #374151); color: #fff; border: none; 
-      padding: 0.875rem 2rem; border-radius: 0.75rem; font-size: 1rem; font-weight: 700; 
-      width: 100%; min-height: 3rem;
-      cursor: pointer;
-    }
-
-    /* 4. 图片视频资源优化 (CSS层) */
-    img, video { max-width: 100%; height: auto; display: block; object-fit: cover; }
+    /* Positions & History Tab */
+    .pos-header { padding: 15px; background: var(--nav-bg); border-bottom: 1px solid var(--line); }
+    .pos-h-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+    .pos-h-row:last-child { margin-bottom: 0; }
+    .pos-h-row .label { color: var(--muted); }
+    .pos-h-row .val { font-weight: bold; }
+    .pos-list-title { background: #f0f0f0; padding: 5px 15px; font-size: 12px; color: #666; font-weight: bold; }
     
-    /* 锁仓按钮 */
-    .lock-btn { 
-      background: linear-gradient(135deg, #f6465d, #ff7b8c); color: #fff; border: none; 
-      padding: 1rem; border-radius: 0.75rem; font-size: 1rem; font-weight: 800; 
-      width: 100%; box-shadow: 0 0.25rem 0.75rem rgba(246,70,93,0.3); margin-top: 0.625rem; 
-      min-height: 3.5rem;
-      cursor: pointer;
-    }
+    .pos-item { padding: 10px 15px; border-bottom: 1px solid var(--line); cursor: pointer; }
+    .p-row1 { display: flex; justify-content: space-between; margin-bottom: 5px; align-items: center; }
+    .p-sym { font-weight: bold; font-size: 16px; }
+    .p-type { font-size: 14px; margin-left: 5px; }
+    .p-type.buy { color: var(--blue); }
+    .p-type.sell { color: var(--red); }
+    .p-lots { font-size: 14px; margin-left: 5px; }
+    .p-profit { font-weight: bold; font-size: 16px; }
+    .p-profit.blue { color: var(--blue); }
+    .p-profit.red { color: var(--red); }
+    .p-row2 { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); }
+
+    /* Modals */
+    .modalMask { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: flex-end; z-index: 1000; }
+    .modal { width: 100%; background: #fff; border-radius: 15px 15px 0 0; padding-bottom: env(safe-area-inset-bottom); animation: slideUp 0.3s ease-out; max-height: 80vh; overflow-y: auto; }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .modalHeader { padding: 15px; text-align: center; font-weight: bold; font-size: 16px; border-bottom: 1px solid var(--line); position: relative; }
+    .modalHeader .close { position: absolute; right: 15px; top: 15px; color: var(--blue); cursor: pointer; }
+    .select-item { padding: 15px; border-bottom: 1px solid var(--line); font-size: 16px; text-align: center; cursor: pointer; }
+    .select-item:active { background: #f0f0f0; }
+
+    /* Quiz specific */
+    .modalBody { padding: 15px; }
+    .quiz-item { margin-bottom: 15px; }
+    .quiz-q { font-size: 14px; font-weight: bold; margin-bottom: 10px; }
+    .quiz-opts { display: flex; gap: 10px; flex-direction: column; }
+    .quiz-opt { padding: 10px; border: 1px solid var(--line); border-radius: 8px; text-align: center; font-size: 14px; cursor: pointer; }
+    .quiz-opt.selected { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .cta { width: 100%; padding: 15px; background: var(--blue); color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; margin-top: 10px; }
+    /* Add Symbol Modal specific */
+    .cat-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); background: var(--nav-bg); }
+    .cat-tab { padding: 12px 15px; white-space: nowrap; color: var(--muted); font-weight: bold; cursor: pointer; }
+    .cat-tab.active { color: var(--blue); border-bottom: 2px solid var(--blue); }
+    .sym-add-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid var(--line); }
+    .sym-add-info { display: flex; flex-direction: column; }
+    .sym-add-name { font-weight: bold; font-size: 16px; }
+    .sym-add-desc { font-size: 12px; color: var(--muted); }
+    .sym-add-btn { color: var(--green); font-size: 24px; cursor: pointer; }
+    .sym-add-btn.added { color: var(--muted); cursor: default; }
+
   </style>
 </head>
 <body>
-
-  <div class="error-popup" id="errorPopup" onclick="closeErrorPopup(event)">
-    <div class="error-popup-content">
-      <div class="error-popup-icon">⚠️</div>
-      <div class="error-popup-title">表单数据错误</div>
-      <div class="error-popup-list" id="errorPopupList"></div>
-      <button class="error-popup-btn" onclick="$('errorPopup').classList.remove('show')">我知道了</button>
+  <div class="top-bar">
+    <div class="top-bar-title" id="topBarTitle">行情</div>
+    <div class="top-bar-actions" id="quotesActions">
+      <span onclick="openAddSymbol()">+</span>
+      <span id="btnEditQuotes" onclick="toggleEditQuotes()">✎</span>
     </div>
   </div>
 
-  <div class="app">
-    <div class="topbar">
-      <div class="title">MT4 量化终端</div>
-      <button class="btn" onclick="alert('系统设置功能开发中...')">设置</button>
+  <!-- Quotes Tab -->
+  <div class="tab-content active" id="tab-quotes">
+    <div id="quotesList"></div>
+  </div>
+
+  <!-- Trade Tab -->
+  <div class="tab-content" id="tab-trade">
+    <div class="trade-header">
+      <div class="sym-title" id="tradeSym">XAUUSD</div>
+      <div class="sym-desc" id="tradeSymDesc">Spot Gold</div>
     </div>
-
-    <div class="tabs-wrapper">
-      <div class="tabs">
-        <button class="tab" data-category="forex" onclick="switchMainTab(this); showCategoryPairs('forex')">外汇</button>
-        <button class="tab" data-category="index" onclick="switchMainTab(this); showCategoryPairs('index')">指数</button>
-        <button class="tab" data-category="commodity" onclick="switchMainTab(this); showCategoryPairs('commodity')">大宗商品</button>
-        <button class="tab active" data-category="metal" onclick="switchMainTab(this); showCategoryPairs('metal')">贵金属</button>
-        <button class="tab" data-category="stock" onclick="switchMainTab(this); showCategoryPairs('stock')">股票</button>
-      </div>
+    <div class="trade-type" onclick="$('orderTypeMask').style.display='flex'">
+      <span id="orderTypeText">市价执行</span>
     </div>
-
-    <div class="symRow">
-      <div class="symLeftTime" id="sysTime">--:--:--</div>
-      <div class="symCenter">
-        <div class="symName">
-          <span id="symName">XAUUSD</span>
-          <span class="symBadge" onclick="openCurrentCategoryPairs()">切换品种 ▼</span>
-        </div>
-      </div>
-      <div class="symRight">
-        <button class="iconBtn huge-chart" title="交易日历看板" onclick="openCalendar()">📈</button>
-      </div>
+    <div class="lots-stepper">
+      <div class="l-btn" onclick="adjustLots(-0.1)">-0.1</div>
+      <div class="l-btn" onclick="adjustLots(-0.01)">-0.01</div>
+      <input type="number" id="inpLots" value="0.11" step="0.01" oninput="onLotsChange(this)">
+      <div class="l-btn" onclick="adjustLots(0.01)">+0.01</div>
+      <div class="l-btn" onclick="adjustLots(0.1)">+0.1</div>
     </div>
-
-    <div class="main-grid">
-      <div class="col-left">
-        <div class="card">
-          <div class="obTopStats">
-            <div class="obStatItem"><div class="obStatLabel">账户净值 (USD)</div><div class="obStatVal" id="equityVal">--</div></div>
-            <div class="obStatItem"><div class="obStatLabel">可用余额 (USD)</div><div class="obStatVal" id="availMarginStr">--</div></div>
-            <div class="obStatItem"><div class="obStatLabel">日内浮动盈亏</div><div class="obStatVal" id="dailyPnlVal" style="color:var(--text)">--</div></div>
-            <div class="obStatItem"><div class="obStatLabel">日内盈亏率</div><div class="obStatVal" id="dailyPnlPctVal" style="color:var(--text)">--</div></div>
-          </div>
-          
-          <div class="midPrice" id="midPriceText">--</div>
-          <div class="midSub">
-            当前实时买入价 (Bid) <span class="signal-dot green" id="latencySignal" title="获取延迟"></span>
-          </div>
-        </div>
-
-        <div class="sl-calculator">
-          <div class="sl-title">
-            <span>基于当前仓位预估止损额度</span>
-            <span style="color:var(--muted); font-size:0.75rem; font-weight:600">公式: 预付款×杠杆×比例</span>
-          </div>
-          <div style="height:1px; background:var(--line); margin:0.75rem 0;"></div>
-          <div class="sl-row"><span class="k">2% 止损亏损</span><span class="v" id="sl_2">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">3% 止损亏损</span><span class="v" id="sl_3">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">5% 止损亏损</span><span class="v" id="sl_5">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">8% 止损亏损</span><span class="v" id="sl_8">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">10% 止损亏损</span><span class="v" id="sl_10">0.00 USD</span></div>
-          
-          <div style="height:1px; background:var(--line); margin:0.75rem 0;"></div>
-          <div class="sl-row"><span class="k">占用保证金</span><span class="v" id="calcMargin">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">开仓名义价值</span><span class="v" id="calcNotional">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">当前设置下每点波动≈</span><span class="v" id="calcPpVal">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">预估强平价格</span><span class="v" id="calcLiq">0.00</span></div>
-        </div>
+    <div class="trade-prices">
+      <div class="t-bid red" id="tBid">5108.93</div>
+      <div class="t-ask blue" id="tAsk">5109.04</div>
+    </div>
+    <div class="t-row" id="rowPrice" style="display:none;">
+      <div class="t-btn" onclick="adjustInput('inpPrice', -1)">-</div>
+      <div class="t-input-wrap">
+        <span class="t-label">价格:</span>
+        <input type="number" id="inpPrice" placeholder="0.00">
       </div>
-
-      <div class="col-right">
-        <div class="card trade-card" style="height: 100%;">
-          <!-- Header -->
-          <div class="trade-header">
-            <!-- 移除 Badge，只保留普通文本或省略 -->
-            <!-- 如果需要保留功能入口，可以用更隐蔽的方式 -->
-            <!-- 这里直接移除视觉干扰，保留功能入口但样式简化 -->
-            <!-- 或者完全按照用户要求“这个标志可删掉了” -->
-            <!-- 用户可能指全仓模式和杠杆的 badge -->
-            <!-- 我们保留余额显示，移除左侧 badge -->
-            <div class="trade-balance" style="width: 100%; text-align: right;">
-              可用: <span class="value" id="formAvail">--</span>
-            </div>
-          </div>
-
-          <!-- 交易类型 -->
-          <div class="trade-type-title" onclick="$('orderTypeMask').style.display='flex'">
-            <span id="orderTypeText">市场执行</span>
-            <span style="font-size:0.8rem">▼</span>
-          </div>
-
-          <!-- 交易量 (Stepper) -->
-          <div class="stepper-row">
-             <button class="step-btn" onclick="adjustLots(-0.1)">-0.1</button>
-             <button class="step-btn" onclick="adjustLots(-0.01)">-0.01</button>
-             <input type="number" id="inpLots" value="0.01" step="0.01" oninput="onLotsChange(this)">
-             <button class="step-btn" onclick="adjustLots(0.01)">+0.01</button>
-             <button class="step-btn" onclick="adjustLots(0.1)">+0.1</button>
-          </div>
-
-          <!-- 报价展示 (Bid/Ask) -->
-          <div class="quote-row">
-             <div class="quote-box bid" id="quoteBid">--</div>
-             <div class="quote-box ask" id="quoteAsk">--</div>
-          </div>
-
-          <!-- 价格 (Market/Limit) -->
-          <div class="form-row-simple" id="row-price">
-             <label>价格:</label>
-             <div id="price-display-area" style="flex:1; text-align:right;">
-                <span id="price-float-text" class="static-val">浮动</span>
-                <input type="number" id="inpPrice" style="display:none; width:100%;" placeholder="输入价格">
-             </div>
-          </div>
-
-          <!-- 止盈 -->
-          <div class="form-row-colored green" id="row-tp">
-             <label>止盈触发价:</label>
-             <div class="input-wrap">
-                <input type="number" id="inpTp" placeholder="0.00">
-                <button class="mini-add" onclick="adjustPrice('inpTp', 1)">+</button>
-             </div>
-          </div>
-
-          <!-- 止损 -->
-          <div class="form-row-colored red" id="row-sl">
-             <label>止损触发价:</label>
-             <div class="input-wrap">
-                <input type="number" id="inpSl" placeholder="0.00">
-                <button class="mini-add" onclick="adjustPrice('inpSl', -1)">+</button>
-             </div>
-          </div>
-
-          <!-- 期限 -->
-          <div class="form-row-simple">
-             <label>期限:</label>
-             <div style="flex:1; text-align:right; display:flex; align-items:center; justify-content:flex-end;">
-                 <input type="number" id="inpTTL" value="10" placeholder="10" style="width: 3rem; text-align:right;" oninput="updateTTLDisplay(this)">
-                 <span id="ttlUnit" style="margin-left:0.25rem; font-weight:700; color:var(--text);">分钟</span>
-             </div>
-          </div>
-
-          <!-- 隐藏的辅助字段容器 (保留逻辑兼容) -->
-          <div style="display:none">
-             <div id="dynamicFormArea"></div> <!-- 旧容器占位，防止JS报错，实际上已移出 -->
-             <span id="pctText"></span>
-             <span id="calcLotsText"></span>
-             <span id="marginPercentText"></span>
-             <input type="range" id="marginSlider">
-          </div>
-
-          <!-- 按钮组 -->
-          <div class="cta-group">
-            <button class="cta buy" onclick="initiateOrder('BUY')">买入 / 做多</button>
-            <button class="cta sell" onclick="initiateOrder('SELL')">卖出 / 做空</button>
-          </div>
-        </div>
+      <div class="t-btn" onclick="adjustInput('inpPrice', 1)">+</div>
+    </div>
+    <div class="sl-tp-row">
+      <div class="t-col sl-col">
+        <div class="t-btn" onclick="adjustInput('inpSl', -1)">-</div>
+        <input type="number" id="inpSl" placeholder="0.00">
+        <div class="t-btn" onclick="adjustInput('inpSl', 1)">+</div>
+      </div>
+      <div class="t-col tp-col">
+        <div class="t-btn" onclick="adjustInput('inpTp', -1)">-</div>
+        <input type="number" id="inpTp" placeholder="0.00">
+        <div class="t-btn" onclick="adjustInput('inpTp', 1)">+</div>
       </div>
     </div>
+    <div class="t-duration" onclick="$('ttlMask').style.display='flex'">
+      <span class="t-label">期限:</span>
+      <span class="t-val" id="ttlDisplay">直到取消</span>
+      <input type="hidden" id="inpTTL" value="0">
+    </div>
+    
+    <div class="trade-actions" id="actionMarket">
+      <button class="btn-sell" onclick="initiateOrder('SELL')">Sell by Market</button>
+      <button class="btn-buy" onclick="initiateOrder('BUY')">Buy by Market</button>
+    </div>
+    <div class="trade-actions" id="actionPending" style="display:none;">
+      <button class="btn-place" onclick="initiateOrder('PENDING')">下单</button>
+    </div>
+  </div>
 
-    <div class="bottom-section">
-      <div class="segTabs">
-        <div class="seg active" onclick="switchBottomTab('positions')">持有仓位 (0)</div>
-        <div class="seg" onclick="switchBottomTab('orders')">当前委托 (0)</div>
-        <div class="seg" onclick="switchBottomTab('history')">历史委托</div>
-      </div>
-      
-      <div class="listCard active" id="list-positions">
-        <div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无持仓</div>
-      </div>
-      
-      <div class="listCard" id="list-orders">
-        <div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无当前委托挂单</div>
-      </div>
+  <!-- Positions Tab -->
+  <div class="tab-content" id="tab-positions">
+    <div class="pos-header">
+      <div class="pos-h-row"><span class="label">结余:</span><span class="val" id="valBalance">0.00</span></div>
+      <div class="pos-h-row"><span class="label">净值:</span><span class="val" id="valEquity">0.00</span></div>
+      <div class="pos-h-row"><span class="label">可用预付款:</span><span class="val" id="valFreeMargin">0.00</span></div>
+    </div>
+    <div class="pos-list-title">持仓</div>
+    <div id="list-positions"></div>
+    <div class="pos-list-title">订单</div>
+    <div id="list-orders"></div>
+  </div>
 
-      <div class="listCard" id="list-history">
-        <div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无历史委托记录</div>
+  <!-- History Tab -->
+  <div class="tab-content" id="tab-history">
+    <div class="pos-header">
+      <div class="pos-h-row"><span class="label">利润:</span><span class="val" id="valProfit">0.00</span></div>
+      <div class="pos-h-row"><span class="label">结余:</span><span class="val" id="valHistBalance">0.00</span></div>
+    </div>
+    <div id="list-history"></div>
+  </div>
+
+  <!-- Bottom Nav -->
+  <div class="bottom-nav">
+    <div class="nav-item active" onclick="switchTab('quotes', '行情', this)">
+      <div class="nav-icon">📊</div>
+      <span>行情</span>
+    </div>
+    <div class="nav-item" onclick="switchTab('trade', '交易', this)">
+      <div class="nav-icon">⚖️</div>
+      <span>交易</span>
+    </div>
+    <div class="nav-item" onclick="switchTab('positions', '持仓', this)">
+      <div class="nav-icon">💼</div>
+      <span>持仓</span>
+    </div>
+    <div class="nav-item" onclick="switchTab('history', '历史', this)">
+      <div class="nav-icon">🕒</div>
+      <span>历史</span>
+    </div>
+  </div>
+
+  <!-- Order Type Modal -->
+  <div class="modalMask" id="orderTypeMask" onclick="closeModal(event, 'orderTypeMask')">
+    <div class="modal">
+      <div class="modalHeader">选择交易类型 <span class="close" onclick="$('orderTypeMask').style.display='none'">取消</span></div>
+      <div class="modalBody" style="padding:0;">
+        <div class="select-item" onclick="setOrderType('market', '市价执行', '')">市价执行</div>
+        <div class="select-item" onclick="setOrderType('limit', 'Buy Limit', 'BUY')">Buy Limit</div>
+        <div class="select-item" onclick="setOrderType('limit', 'Sell Limit', 'SELL')">Sell Limit</div>
+        <div class="select-item" onclick="setOrderType('limit', 'Buy Stop', 'BUY')">Buy Stop</div>
+        <div class="select-item" onclick="setOrderType('limit', 'Sell Stop', 'SELL')">Sell Stop</div>
       </div>
     </div>
   </div>
 
-  <!-- 弹窗部分 -->
+  <!-- TTL Modal -->
+  <div class="modalMask" id="ttlMask" onclick="closeModal(event, 'ttlMask')">
+    <div class="modal">
+      <div class="modalHeader">期限 <span class="close" onclick="$('ttlMask').style.display='none'">取消</span></div>
+      <div class="modalBody" style="padding:0;">
+        <div class="select-item" onclick="setTTL(0, '直到取消')">直到取消 (GTC)</div>
+        <div class="select-item" onclick="setTTL(10, '10 分钟')">10 分钟</div>
+        <div class="select-item" onclick="setTTL(60, '1 小时')">1 小时</div>
+        <div class="select-item" onclick="setTTL(1440, '1 天')">1 天</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modify Position Modal -->
+  <div class="modalMask" id="modifyMask" onclick="closeModal(event, 'modifyMask')">
+    <div class="modal">
+      <div class="modalHeader">修改订单 <span class="close" onclick="$('modifyMask').style.display='none'">取消</span></div>
+      <div class="modalBody">
+        <div class="sl-tp-row" style="border:none; margin-bottom: 20px;">
+          <div class="t-col sl-col">
+            <div class="t-btn" onclick="adjustInput('modSlPrice', -1)">-</div>
+            <input type="number" id="modSlPrice" placeholder="止损">
+            <div class="t-btn" onclick="adjustInput('modSlPrice', 1)">+</div>
+          </div>
+          <div class="t-col tp-col">
+            <div class="t-btn" onclick="adjustInput('modTpPrice', -1)">-</div>
+            <input type="number" id="modTpPrice" placeholder="止盈">
+            <div class="t-btn" onclick="adjustInput('modTpPrice', 1)">+</div>
+          </div>
+        </div>
+        <button class="cta" onclick="submitModifyOrder()">修改</button>
+        <button class="cta" style="background:var(--red); margin-top:10px;" onclick="closePosition()">平仓</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quiz Modal -->
   <div class="modalMask" id="quizMask" onclick="closeModal(event, 'quizMask')">
     <div class="modal">
-      <div class="modalHeader"><span>执行前风控检查</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('quizMask').style.display='none'">✕</button></div>
+      <div class="modalHeader">执行前风控检查 <span class="close" onclick="$('quizMask').style.display='none'">取消</span></div>
       <div class="modalBody">
         <div class="quiz-item">
           <div class="quiz-q">1. 该笔交易是否顺应大级别趋势？</div>
@@ -1717,1146 +1376,537 @@ HTML_TEMPLATE = r"""<!doctype html>
             <div class="quiz-opt" onclick="selectQuiz(this, 2, 'B')">B. 未达标</div>
           </div>
         </div>
-        <div class="quiz-item">
-          <div class="quiz-q">3. 当前是否属于情绪化报复性交易？</div>
-          <div class="quiz-opts">
-            <div class="quiz-opt" onclick="selectQuiz(this, 3, 'A')">A. 情绪稳定，非报复</div>
-            <div class="quiz-opt" onclick="selectQuiz(this, 3, 'B')">B. 是的，急于回本</div>
-          </div>
-        </div>
-        <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="confirmOrderAfterQuiz()">确认并发送订单</button>
+        <button class="cta" onclick="confirmOrderAfterQuiz()">确认并发送订单</button>
       </div>
     </div>
   </div>
 
-  <div class="modalMask" id="modifyMask" onclick="closeModal(event, 'modifyMask')">
-    <div class="modal">
-      <div class="modalHeader"><span>高级订单管理</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('modifyMask').style.display='none'">✕</button></div>
-      <div class="modalBody">
-        <div style="margin-bottom: 1.25rem; padding: 1rem; border: 1px solid var(--line); border-radius: 0.75rem;">
-          <div class="form-row" style="margin-bottom: 0.75rem;">
-            <label style="color:var(--green)">止盈触发价 (T/P)</label>
-            <input type="number" id="modTpPrice" placeholder="输入价格">
-          </div>
-          <div class="range-wrap" style="margin: 0;">
-            <div class="range-header"><span>止盈平仓数量</span><span style="color:var(--text);font-weight:800" id="tpLotsText">1.00 手</span></div>
-            <input type="range" id="tpLotsSlider" min="0.01" max="1.00" step="0.01" value="1.00">
-          </div>
-        </div>
-
-        <div style="margin-bottom: 1.25rem; padding: 1rem; border: 1px solid var(--line); border-radius: 0.75rem;">
-          <div class="form-row" style="margin-bottom: 0.75rem;">
-            <label style="color:var(--red)">止损触发价 (S/L)</label>
-            <input type="number" id="modSlPrice" placeholder="输入价格">
-          </div>
-          <div class="range-wrap" style="margin: 0;">
-            <div class="range-header"><span>止损平仓数量</span><span style="color:var(--text);font-weight:800" id="slLotsText">1.00 手</span></div>
-            <input type="range" id="slLotsSlider" min="0.01" max="1.00" step="0.01" value="1.00">
-          </div>
-        </div>
-
-        <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="submitModifyOrder()">保存修改</button>
-        <button class="lock-btn" onclick="executeLockPosition()">🔒 锁定当前仓位</button>
+  <!-- Add Symbol Modal -->
+  <div class="modalMask" id="addSymbolMask" onclick="closeModal(event, 'addSymbolMask')">
+    <div class="modal" style="height: 90vh;">
+      <div class="modalHeader">添加品种 <span class="close" onclick="$('addSymbolMask').style.display='none'">取消</span></div>
+      <div class="cat-tabs" id="addSymbolCats">
+        <!-- 动态生成分类 Tab -->
       </div>
-    </div>
-  </div>
-
-  <div class="modalMask" id="calendarMask" onclick="closeModal(event, 'calendarMask')">
-    <div class="modal" style="height: 80vh;">
-      <div class="modalHeader">
-        <span>当月交易日历</span>
-        <button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('calendarMask').style.display='none'">✕</button>
-      </div>
-      <div class="modalBody">
-        <div style="text-align:center; font-weight:800; font-size:1.125rem; margin-bottom:1rem;" id="calTitle">2024 年 5 月</div>
-        <div class="cal-header">
-          <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
-        </div>
-        <div class="cal-grid" id="calGrid"></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="modalMask" id="levMask" onclick="closeModal(event, 'levMask')">
-    <div class="modal">
-      <div class="modalHeader"><span>调整杠杆倍数</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('levMask').style.display='none'">✕</button></div>
-      <div class="modalBody">
-        <div style="display:flex; justify-content:space-between; margin-bottom:1rem;">
-          <span style="color:var(--muted); font-weight:700;">当前选择杠杆</span>
-          <span style="font-size:1.125rem; font-weight:800;"><span id="levTextModal">20</span>x</span>
-        </div>
-        <div class="range-wrap" style="margin-top:0;">
-          <input type="range" id="levSlider" min="1" max="100" step="1" value="20">
-        </div>
-        <div style="color:#d97706; font-size:0.75rem; font-weight:700; margin-bottom:1.25rem;">* 提示：调整杠杆会重算占用资金及止损额度估值。</div>
-        <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="$('levMask').style.display='none'">确认修改</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="modalMask" id="orderTypeMask" onclick="closeModal(event, 'orderTypeMask')">
-    <div class="modal">
-      <div class="modalHeader"><span>选择交易类型</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('orderTypeMask').style.display='none'">✕</button></div>
-      <div class="modalBody" style="padding: 0;">
-        <div class="select-item" onclick="setOrderType('market', '市价')">市价</div>
-        <div class="select-item" onclick="setOrderType('market_tpsl', '市价止盈止损')">市价止盈止损</div>
-        <div class="select-item" onclick="setOrderType('limit', '限价单')">限价单</div>
-        <div class="select-item active" onclick="setOrderType('limit_tpsl', '限价止盈止损')">限价止盈止损</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="modalMask" id="pairMask" onclick="closeModal(event, 'pairMask')">
-    <div class="modal">
-      <div class="modalHeader"><span id="pairModalTitle">切换交易品种</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('pairMask').style.display='none'">✕</button></div>
-      <div class="modalBody" id="pairListContainer">
-        <!-- JS 动态生成 -->
+      <div class="modalBody" id="addSymbolList" style="padding:0; overflow-y: auto; height: calc(100% - 100px);">
+        <!-- 动态生成品种列表 -->
       </div>
     </div>
   </div>
 
   <script>
-    // 全局选择器辅助函数
     const $ = id => document.getElementById(id);
-
-    // 消除 300ms 点击延迟
-    document.addEventListener('touchstart', function(){}, {passive: true});
-
-    // 暴露全局状态
     window.quantState = {
-      equity: 0,         
-      availMargin: 0,
-      price: 0,           
-      contractSize: 100,        
-      pointSize: 0.01,          
-      marginPct: 0, // 默认为0，防止后端错误地优先使用保证金计算手数
-      leverage: 20,             
-      lots: 0.01,   // 默认 0.01
-      orderType: 'limit_tpsl',
+      price: 0,
+      lots: 0.11,
+      orderType: 'market',
       pendingSide: '',
-      // 新增：价格停滞检测状态
-      lastPriceForSignal: 0,
-      priceStagnationCount: 0
+      currentModifyTicket: null
     };
-
+    let quoteInterval = null;
     let quizAnswers = {};
 
-    // 格式化数字
-    function fmtNum(n, d) { return parseFloat(n).toFixed(d); }
+    function fmtNum(n, d) { return parseFloat(n || 0).toFixed(d); }
 
-    // 暴露全局 API
-    window.API = {
-      // 1. 发送下单指令
-      submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
-        console.log("【API】执行下单:", {symbol, side, type, marginPct, leverage, calculatedLots, ...params});
-        
-        try {
-          const response = await fetch('/api/v1/order', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              symbol,
-              side,
-              type,
-              marginPct,
-              leverage,
-              lots: calculatedLots,
-              ...params
-            })
-          });
-          const data = await response.json();
-          return data;
-        } catch (error) {
-          console.error("下单失败:", error);
-          alert("网络请求失败，请检查连接");
-          return { success: false };
+    const categoryPairs = {
+      'Forex': [
+        { name: 'USDCHF', desc: 'US Dollar vs Swiss Franc', price: 0.8840, spread: 5, low: 0.8800, high: 0.8900 },
+        { name: 'GBPUSD', desc: 'Great Britain Pound vs US Dollar', price: 1.2640, spread: 8, low: 1.2600, high: 1.2680 },
+        { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
+        { name: 'USDJPY', desc: 'US Dollar vs Japanese Yen', price: 149.50, spread: 7, low: 149.00, high: 150.00 },
+        { name: 'USDCAD', desc: 'US Dollar vs Canadian Dollar', price: 1.3580, spread: 6, low: 1.3500, high: 1.3600 },
+        { name: 'AUDUSD', desc: 'Australian Dollar vs US Dollar', price: 0.6520, spread: 5, low: 0.6500, high: 0.6550 },
+        { name: 'EURGBP', desc: 'Euro vs Great Britain Pound', price: 0.8580, spread: 6, low: 0.8550, high: 0.8600 },
+        { name: 'EURAUD', desc: 'Euro vs Australian Dollar', price: 1.6533, spread: 10, low: 1.6500, high: 1.6600 },
+        { name: 'EURCHF', desc: 'Euro vs Swiss Franc', price: 0.9050, spread: 7, low: 0.9000, high: 0.9100 },
+        { name: 'EURJPY', desc: 'Euro vs Japanese Yen', price: 162.74, spread: 9, low: 162.00, high: 163.00 },
+        { name: 'GBPCHF', desc: 'Great Britain Pound vs Swiss Franc', price: 1.0418, spread: 12, low: 1.0400, high: 1.0500 },
+        { name: 'CADJPY', desc: 'Canadian Dollar vs Japanese Yen', price: 115.48, spread: 10, low: 115.00, high: 116.00 },
+        { name: 'GBPJPY', desc: 'Great Britain Pound vs Japanese Yen', price: 210.35, spread: 15, low: 210.00, high: 211.00 },
+        { name: 'AUDNZD', desc: 'Australian Dollar vs New Zealand Dollar', price: 1.1918, spread: 8, low: 1.1900, high: 1.2000 },
+        { name: 'AUDCAD', desc: 'Australian Dollar vs Canadian Dollar', price: 0.9568, spread: 8, low: 0.9500, high: 0.9600 },
+        { name: 'AUDCHF', desc: 'Australian Dollar vs Swiss Franc', price: 0.5473, spread: 10, low: 0.5400, high: 0.5500 },
+        { name: 'AUDJPY', desc: 'Australian Dollar vs Japanese Yen', price: 110.51, spread: 10, low: 110.00, high: 111.00 },
+        { name: 'CHFJPY', desc: 'Swiss Franc vs Japanese Yen', price: 201.88, spread: 12, low: 201.00, high: 202.00 },
+        { name: 'EURNZD', desc: 'Euro vs New Zealand Dollar', price: 1.9707, spread: 15, low: 1.9600, high: 1.9800 },
+        { name: 'EURCAD', desc: 'Euro vs Canadian Dollar', price: 1.5822, spread: 12, low: 1.5800, high: 1.5900 },
+        { name: 'CADCHF', desc: 'Canadian Dollar vs Swiss Franc', price: 0.5719, spread: 10, low: 0.5700, high: 0.5800 },
+        { name: 'NZDJPY', desc: 'New Zealand Dollar vs Japanese Yen', price: 92.71, spread: 10, low: 92.00, high: 93.00 },
+        { name: 'NZDUSD', desc: 'New Zealand Dollar vs US Dollar', price: 0.5872, spread: 6, low: 0.5800, high: 0.5900 },
+        { name: 'GBPAUD', desc: 'Great Britain Pound vs Australian Dollar', price: 1.9032, spread: 15, low: 1.9000, high: 1.9100 },
+        { name: 'GBPCAD', desc: 'Great Britain Pound vs Canadian Dollar', price: 1.8213, spread: 15, low: 1.8200, high: 1.8300 },
+        { name: 'GBPNZD', desc: 'Great Britain Pound vs New Zealand Dollar', price: 2.2686, spread: 20, low: 2.2600, high: 2.2800 },
+        { name: 'NZDCAD', desc: 'New Zealand Dollar vs Canadian Dollar', price: 0.8027, spread: 10, low: 0.8000, high: 0.8100 },
+        { name: 'NZDCHF', desc: 'New Zealand Dollar vs Swiss Franc', price: 0.4591, spread: 12, low: 0.4500, high: 0.4600 },
+        { name: 'USDSGD', desc: 'US Dollar vs Singapore Dollar', price: 1.2805, spread: 10, low: 1.2800, high: 1.2900 },
+        { name: 'USDHKD', desc: 'US Dollar vs Hong Kong Dollar', price: 7.8190, spread: 5, low: 7.8100, high: 7.8300 },
+        { name: 'USDCNH', desc: 'US Dollar vs Chinese Yuan', price: 6.9147, spread: 20, low: 6.9000, high: 6.9500 }
+      ],
+      'Metals': [
+        { name: 'XAGUSD', desc: 'Spot Silver', price: 82.76, spread: 20, low: 82.00, high: 83.00 },
+        { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 }
+      ],
+      'Indices': [
+        { name: 'U30USD', desc: 'Wall Street 30', price: 47836.1, spread: 28, low: 47000.0, high: 48000.0 },
+        { name: 'NASUSD', desc: 'US Tech 100', price: 24922.8, spread: 12, low: 24000.0, high: 25000.0 },
+        { name: 'SPXUSD', desc: 'US SPX 500', price: 6803.72, spread: 15, low: 6700.0, high: 6900.0 },
+        { name: '100GBP', desc: 'UK 100', price: 10428.9, spread: 10, low: 10400.0, high: 10500.0 },
+        { name: 'D30EUR', desc: 'Germany 30', price: 23822.2, spread: 10, low: 23000.0, high: 24000.0 },
+        { name: 'E50EUR', desc: 'Euro STOXX 50', price: 5773.4, spread: 8, low: 5700.0, high: 5800.0 },
+        { name: 'H33HKD', desc: 'Hong Kong 50', price: 25503.1, spread: 569, low: 24774.4, high: 25542.1 }
+      ],
+      'Commodities': [
+        { name: 'UKOUSD', desc: 'UK Brent Oil', price: 87.35, spread: 25, low: 86.00, high: 88.00 },
+        { name: 'USOUSD', desc: 'US Crude Oil', price: 84.29, spread: 24, low: 83.00, high: 85.00 }
+      ],
+      'Crypto': [
+        { name: 'BTCUSD', desc: 'Bitcoin', price: 70594, spread: 50, low: 69000, high: 71000 },
+        { name: 'BCHUSD', desc: 'Bitcoin Cash', price: 456.94, spread: 30, low: 450, high: 460 },
+        { name: 'RPLUSD', desc: 'Ripple', price: 1.4003, spread: 5, low: 1.35, high: 1.45 },
+        { name: 'LTCUSD', desc: 'Litecoin', price: 55.28, spread: 10, low: 50, high: 60 },
+        { name: 'ETHUSD', desc: 'Ethereum', price: 2061.8, spread: 15, low: 2000, high: 2100 },
+        { name: 'XMRUSD', desc: 'Monero', price: 357.28, spread: 20, low: 350, high: 360 },
+        { name: 'BNBUSD', desc: 'Binance Coin', price: 641.10, spread: 15, low: 630, high: 650 },
+        { name: 'SOLUSD', desc: 'Solana', price: 87.5, spread: 10, low: 85, high: 90 },
+        { name: 'LNKUSD', desc: 'Chainlink', price: 9.123, spread: 5, low: 9.00, high: 9.20 },
+        { name: 'XSIUSD', desc: 'Shiba Inu', price: 0.201, spread: 2, low: 0.19, high: 0.21 },
+        { name: 'DOGUSD', desc: 'Dogecoin', price: 0.0933, spread: 2, low: 0.09, high: 0.10 },
+        { name: 'ADAUSD', desc: 'Cardano', price: 0.2673, spread: 2, low: 0.25, high: 0.28 },
+        { name: 'AVEUSD', desc: 'Aave', price: 116.35, spread: 10, low: 110, high: 120 },
+        { name: 'DSHUSD', desc: 'Dash', price: 34.063, spread: 10, low: 30, high: 40 }
+      ],
+      'Stocks': [
+        { name: 'AAPL', desc: 'Apple Inc', price: 260.39, spread: 10, low: 255, high: 265 },
+        { name: 'AMZN', desc: 'Amazon.com', price: 218.76, spread: 10, low: 215, high: 220 },
+        { name: 'BABA', desc: 'Alibaba Group', price: 130.22, spread: 15, low: 125, high: 135 },
+        { name: 'GOOGL', desc: 'Alphabet Inc', price: 301.18, spread: 12, low: 295, high: 305 },
+        { name: 'META', desc: 'Meta Platforms', price: 660.93, spread: 15, low: 650, high: 670 },
+        { name: 'MSFT', desc: 'Microsoft Corp', price: 410.64, spread: 15, low: 400, high: 415 },
+        { name: 'NFLX', desc: 'Netflix Inc', price: 99.14, spread: 8, low: 95, high: 105 },
+        { name: 'NVDA', desc: 'NVIDIA Corp', price: 178.51, spread: 12, low: 170, high: 185 },
+        { name: 'TSLA', desc: 'Tesla Inc', price: 405.46, spread: 15, low: 400, high: 410 },
+        { name: 'ABBV', desc: 'AbbVie Inc', price: 232.09, spread: 10, low: 230, high: 235 },
+        { name: 'ABNB', desc: 'Airbnb Inc', price: 135.71, spread: 10, low: 130, high: 140 },
+        { name: 'ABT', desc: 'Abbott Laboratories', price: 110.86, spread: 8, low: 108, high: 112 },
+        { name: 'ADBE', desc: 'Adobe Inc', price: 281.64, spread: 12, low: 280, high: 285 },
+        { name: 'AMD', desc: 'Advanced Micro Devices', price: 198.97, spread: 10, low: 195, high: 200 },
+        { name: 'AVGO', desc: 'Broadcom Inc', price: 332.70, spread: 15, low: 330, high: 335 },
+        { name: 'C', desc: 'Citigroup Inc', price: 108.86, spread: 8, low: 105, high: 110 },
+        { name: 'CRM', desc: 'Salesforce Inc', price: 201.29, spread: 10, low: 200, high: 205 },
+        { name: 'DIS', desc: 'Walt Disney Co', price: 102.35, spread: 8, low: 100, high: 105 },
+        { name: 'GS', desc: 'Goldman Sachs', price: 835.15, spread: 20, low: 830, high: 840 },
+        { name: 'INTC', desc: 'Intel Corp', price: 45.80, spread: 5, low: 45, high: 47 },
+        { name: 'JNJ', desc: 'Johnson & Johnson', price: 239.52, spread: 10, low: 235, high: 240 },
+        { name: 'MA', desc: 'Mastercard Inc', price: 524.28, spread: 15, low: 520, high: 530 },
+        { name: 'MCD', desc: 'McDonalds Corp', price: 327.32, spread: 12, low: 325, high: 330 },
+        { name: 'KO', desc: 'Coca-Cola Co', price: 76.91, spread: 5, low: 75, high: 78 },
+        { name: 'MMM', desc: '3M Co', price: 156.12, spread: 8, low: 155, high: 158 },
+        { name: 'NIO', desc: 'NIO Inc', price: 4.56, spread: 2, low: 4.50, high: 4.60 },
+        { name: 'PLTR', desc: 'Palantir Tech', price: 152.50, spread: 10, low: 150, high: 155 },
+        { name: 'SHOP', desc: 'Shopify Inc', price: 134.68, spread: 10, low: 130, high: 140 },
+        { name: 'TSM', desc: 'Taiwan Semiconductor', price: 344.40, spread: 15, low: 340, high: 350 },
+        { name: 'V', desc: 'Visa Inc', price: 319.47, spread: 12, low: 315, high: 325 }
+      ]
+    };
+    
+    // 扁平化所有可用的大类列表，供内部查询
+    const allAvailablePairs = Object.values(categoryPairs).flat();
+
+    // 初始化收藏列表 (从 localStorage 读取)
+    let savedQuotes = [];
+    try {
+        const stored = localStorage.getItem('mt4_saved_quotes');
+        if (stored) {
+            savedQuotes = JSON.parse(stored);
+        } else {
+            // 默认收藏
+            savedQuotes = ['D30EUR', 'NASUSD', 'U30USD', 'XAUUSD', 'EURUSD', 'USOUSD', 'H33HKD'];
+            localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
         }
-      },
-      
-      // 2. 修改持仓订单 (分批止盈止损)
-      modifyPosition: async function(positionId, tpPrice, tpLots, slPrice, slLots) {
-        console.log("【API】修改持仓:", {positionId, tpPrice, tpLots, slPrice, slLots});
-        
-        try {
-          const response = await fetch('/api/v1/position/modify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ positionId, tpPrice, tpLots, slPrice, slLots })
-          });
-          return await response.json();
-        } catch (error) {
-          console.error("修改持仓失败:", error);
-          return { success: false };
-        }
-      },
-      
-      // 3. 锁仓接口
-      lockPosition: async function(positionId) {
-        console.log("【API】一键锁仓:", {positionId});
-        
-        try {
-          const response = await fetch('/api/v1/position/lock', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ positionId })
-          });
-          return await response.json();
-        } catch (error) {
-          console.error("锁仓失败:", error);
-          return { success: false };
-        }
-      },
-      
-      // 4. 获取历史日历盈亏数据
-      getCalendarPnL: async function(year, month) {
-        console.log("【API】获取日历数据:", year, month);
-        
-        try {
-          const response = await fetch(`/api/v1/calendar?year=${year}&month=${month}`);
-          return await response.json();
-        } catch (error) {
-          console.error("获取日历失败:", error);
-          return {};
-        }
-      }
+    } catch(e) {
+        savedQuotes = ['XAUUSD', 'EURUSD'];
+    }
+    
+    let isEditMode = false;
+
+    window.onload = () => {
+      renderQuotes();
+      selectSymbol('XAUUSD', 5110.43, 'Spot Gold');
+      setInterval(refreshData, 3000);
     };
 
-    // 暴露全局函数供 HTML 调用
-    window.updateCalculations = function() {
-      const { availMargin } = window.quantState;
-      // 核心变更：Lots 不再由保证金反推，而是直接取自输入框 (或 window.quantState.lots)
-      // 如果输入框存在，以输入框为准；否则以 quantState 为准
+    function renderQuotes() {
+      let html = '';
+      const displayPairs = allAvailablePairs.filter(p => savedQuotes.includes(p.name));
       
-      const lotsInput = $('inpLots');
-      let currentLots = 0.01;
-      
-      if(lotsInput) {
-          currentLots = parseFloat(lotsInput.value) || 0;
-      } else {
-          currentLots = window.quantState.lots || 0.01;
-      }
-      
-      if(currentLots < 0.01) currentLots = 0.01;
-      window.quantState.lots = currentLots;
+      displayPairs.forEach(p => {
+        const time = new Date().toLocaleTimeString('en-US', {hour12:false});
+        // 从后端获取的价格如果存在，可以替换这里的静态价格
+        // 这里只是初始渲染，实际价格会通过 refreshData 更新
+        const bid = p.price;
+        const ask = p.price + (p.spread * 0.01);
+        const digits = p.name === 'EURUSD' ? 4 : 2;
+        html += `
+        <div class="q-row ${isEditMode ? 'edit-mode' : ''}" onclick="${isEditMode ? '' : `selectSymbol('${p.name}', ${p.price}, '${p.desc}')`}">
+          <div class="q-delete-btn" onclick="removeQuote('${p.name}', event)">⊖</div>
+          <div class="q-left">
+            <div class="q-sym">${p.name}</div>
+            <div class="q-time">${time}</div>
+            <div class="q-spread">点差: ${p.spread}</div>
+          </div>
+          <div class="q-right">
+            <div class="q-prices">
+              <div class="blue" id="q_bid_${p.name}">${bid.toFixed(digits)}</div>
+              <div class="red" id="q_ask_${p.name}">${ask.toFixed(digits)}</div>
+            </div>
+            <div class="q-hl">
+              <div>最低: ${p.low.toFixed(digits)}</div>
+              <div>最高: ${p.high.toFixed(digits)}</div>
+            </div>
+          </div>
+        </div>`;
+      });
+      $('quotesList').innerHTML = html || '<div style="padding:20px;text-align:center;color:#888;">暂无收藏品种，请点击右上角添加</div>';
+    }
 
-      // 获取当前品种规则
-      const rule = window.quantState.symbolRules || {};
-      const marginPerLot = rule.margin_per_lot_usd || 0;
-      
-      // 计算占用保证金
-      // Margin = Lots * MarginPerLot
-      const usedMargin = currentLots * marginPerLot;
-      
-      // 更新 UI 显示 (这里主要是为了兼容旧逻辑的 ID，实际上新 UI 可能不显示这些)
-      if($('pctText')) $('pctText').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2});
-      
-      // 计算名义价值
-      const contractSize = rule.spec ? rule.spec.size : 100; 
-      const notionalVal = currentLots * contractSize * window.quantState.price;
-      if($('calcNotional')) $('calcNotional').innerText = notionalVal.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
-      
-      // 计算每点波动价值 (每变动 1.0 价格)
-      const valPerPriceUnit = currentLots * contractSize;
-      if($('calcPpVal')) $('calcPpVal').innerText = valPerPriceUnit.toFixed(2) + " USD";
-      
-      // 计算强平价格
-      let liqPrice = 0;
-      const equity = window.quantState.equity || 0;
-      if (valPerPriceUnit > 0 && equity > 0) {
-           const priceDist = equity / valPerPriceUnit;
-           liqPrice = Math.max(0, window.quantState.price - priceDist);
-      }
-      if($('calcLiq')) $('calcLiq').innerText = liqPrice > 0 ? liqPrice.toFixed(2) : "0.00";
+    window.toggleEditQuotes = function() {
+        isEditMode = !isEditMode;
+        $('btnEditQuotes').style.color = isEditMode ? 'var(--red)' : 'var(--blue)';
+        renderQuotes();
     };
 
-    // 新增：调整手数
+    window.removeQuote = function(name, event) {
+        event.stopPropagation();
+        savedQuotes = savedQuotes.filter(q => q !== name);
+        localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
+        renderQuotes();
+    };
+
+    window.openAddSymbol = function() {
+        renderAddSymbolCats();
+        // 默认选中第一个分类
+        renderAddSymbolList(Object.keys(categoryPairs)[0]);
+        $('addSymbolMask').style.display = 'flex';
+    };
+
+    function renderAddSymbolCats() {
+        let html = '';
+        Object.keys(categoryPairs).forEach((cat, idx) => {
+            html += `<div class="cat-tab ${idx === 0 ? 'active' : ''}" onclick="switchAddCat(this, '${cat}')">${cat}</div>`;
+        });
+        $('addSymbolCats').innerHTML = html;
+    }
+
+    window.switchAddCat = function(el, cat) {
+        document.querySelectorAll('.cat-tab').forEach(t => t.classList.remove('active'));
+        el.classList.add('active');
+        renderAddSymbolList(cat);
+    };
+
+    function renderAddSymbolList(cat) {
+        let html = '';
+        const pairs = categoryPairs[cat] || [];
+        pairs.forEach(p => {
+            const isAdded = savedQuotes.includes(p.name);
+            html += `
+            <div class="sym-add-item">
+                <div class="sym-add-info">
+                    <div class="sym-add-name">${p.name}</div>
+                    <div class="sym-add-desc">${p.desc}</div>
+                </div>
+                <div class="sym-add-btn ${isAdded ? 'added' : ''}" onclick="${isAdded ? '' : `addQuote('${p.name}', this)`}">
+                    ${isAdded ? '✓' : '⊕'}
+                </div>
+            </div>`;
+        });
+        $('addSymbolList').innerHTML = html;
+    }
+
+    window.addQuote = function(name, btnEl) {
+        if (!savedQuotes.includes(name)) {
+            savedQuotes.push(name);
+            localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
+            btnEl.innerHTML = '✓';
+            btnEl.classList.add('added');
+            btnEl.onclick = null; // 移除点击事件
+            renderQuotes(); // 更新主页面列表
+        }
+    };
+
+    window.switchTab = function(tabId, title, el) {
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      $('tab-' + tabId).classList.add('active');
+      el.classList.add('active');
+      $('topBar').innerText = title;
+      
+      if(tabId === 'history') fetchHistoryTrades();
+    };
+
+    window.selectSymbol = function(name, price, desc) {
+      $('tradeSym').innerText = name;
+      if (desc) $('tradeSymDesc').innerText = desc;
+      window.quantState.price = price;
+      
+      if(quoteInterval) clearInterval(quoteInterval);
+      window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {}); 
+      quoteInterval = setInterval(() => {
+          window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {});
+      }, 1000);
+      
+      setTimeout(refreshData, 500);
+      switchTab('trade', '交易', document.querySelectorAll('.nav-item')[1]);
+    };
+
     window.adjustLots = function(delta) {
-        const input = $('inpLots');
-        if(!input) return;
-        let val = parseFloat(input.value) || 0;
+        let val = parseFloat($('inpLots').value) || 0;
         val += delta;
         if(val < 0.01) val = 0.01;
-        input.value = parseFloat(val.toFixed(2));
-        window.onLotsChange(input);
+        $('inpLots').value = val.toFixed(2);
+        window.quantState.lots = val;
     };
-
-    // 新增：手数变更回调
     window.onLotsChange = function(el) {
         let val = parseFloat(el.value);
         if(isNaN(val) || val < 0) val = 0.01;
         window.quantState.lots = val;
-        window.updateCalculations();
     };
-    
-    // 新增：调整价格 (TP/SL)
-    window.adjustPrice = function(id, delta) {
-        const input = $(id);
-        if(!input) return;
-        let val = parseFloat(input.value);
-        if(isNaN(val)) val = window.quantState.price || 0;
-        
-        // 根据品种精度调整，这里简化为 1.0 或 0.01
-        // 最好根据当前价格精度。假设 XAUUSD 精度 2，其他 4/5
-        // 简单处理：如果是整数或大数，步长 1；小数步长 0.01? 
-        // 用户代码里是 delta=1/-1，说明是整数微调。
-        // 但对于外汇 1.0850，+1 变成 2.0850 太大了。
-        // 既然用户要求 "微调按钮"，我们根据价格大小动态决定步长
-        let step = 1;
-        if(val < 10) step = 0.0001;
-        else if(val < 1000) step = 0.01;
-        
-        val += (delta * step);
+
+    window.adjustInput = function(id, delta) {
+        let el = $(id);
+        let val = parseFloat(el.value) || 0;
+        let step = val < 10 ? 0.0001 : 0.01;
+        val += delta * step;
         if(val < 0) val = 0;
-        
-        // 格式化
-        const digits = (step < 0.01) ? 4 : 2;
-        input.value = val.toFixed(digits);
+        el.value = val.toFixed(step < 0.01 ? 4 : 2);
     };
 
-    // 新增：TTL 显示格式化
-    window.updateTTLDisplay = function(el) {
-        const val = parseInt(el.value) || 0;
-        const unitEl = $('ttlUnit');
-        if(!unitEl) return;
-        
-        if(val >= 60) {
-            const h = Math.floor(val / 60);
-            const m = val % 60;
-            if(m === 0) {
-                unitEl.innerText = `(${h} 小时)`;
-            } else {
-                unitEl.innerText = `(${h} 小时 ${m} 分)`;
-            }
-        } else {
-            unitEl.innerText = "分钟";
-        }
-    };
-
-    window.setOrderType = function(typeCode, typeName) {
+    window.setOrderType = function(typeCode, typeName, pendingSide) {
       window.quantState.orderType = typeCode;
-      if($('orderTypeText')) $('orderTypeText').innerText = typeName;
+      window.quantState.pendingSide = pendingSide;
+      $('orderTypeText').innerText = typeName;
       $('orderTypeMask').style.display = 'none';
       
-      // 更新选中状态
-      document.querySelectorAll('#orderTypeMask .select-item').forEach(el => {
-        el.classList.remove('active');
-        if(el.innerText === typeName) el.classList.add('active');
-      });
-
-      // 切换价格行显示
-      const rowPrice = $('row-price');
-      const floatText = $('price-float-text');
-      const inpPrice = $('inpPrice');
-      
-      if(rowPrice && floatText && inpPrice) {
-          if(typeCode.includes('limit')) {
-              // 限价模式：显示输入框
-              floatText.style.display = 'none';
-              inpPrice.style.display = 'block';
-              if(!inpPrice.value) inpPrice.value = window.quantState.price; // 预填当前价
-          } else {
-              // 市场模式：显示浮动
-              floatText.style.display = 'inline';
-              inpPrice.style.display = 'none';
-          }
-      }
-      
-      // 切换止盈止损行显示 (仅在 *_tpsl 模式下显示)
-      const rowTp = $('row-tp');
-      const rowSl = $('row-sl');
-      if(rowTp && rowSl) {
-          if(typeCode.includes('tpsl')) {
-              rowTp.style.display = 'flex';
-              rowSl.style.display = 'flex';
-          } else {
-              rowTp.style.display = 'none';
-              rowSl.style.display = 'none';
-          }
+      if (typeCode === 'market') {
+        $('rowPrice').style.display = 'none';
+        $('actionMarket').style.display = 'flex';
+        $('actionPending').style.display = 'none';
+      } else {
+        $('rowPrice').style.display = 'flex';
+        $('actionMarket').style.display = 'none';
+        $('actionPending').style.display = 'flex';
+        if(!$('inpPrice').value || $('inpPrice').value == 0) $('inpPrice').value = window.quantState.price;
       }
     };
-    
-    // 重写 getFormInputs 以适配新 ID
-    window.getFormInputs = function() {
-        const data = {};
-        // 显式获取新 ID 的值
-        if($('inpPrice')) data['inpPrice'] = $('inpPrice').value;
-        if($('inpTp')) data['inpTp'] = $('inpTp').value;
-        if($('inpSl')) data['inpSl'] = $('inpSl').value;
-        if($('inpTTL')) data['inpTTL'] = $('inpTTL').value;
-        return data;
+
+    window.setTTL = function(val, text) {
+      $('inpTTL').value = val;
+      $('ttlDisplay').innerText = text;
+      $('ttlMask').style.display = 'none';
     };
 
-    window.validateFormInputs = function() {
-      // 简化校验
-      return [];
-    };
+    window.closeModal = function(e, id) { if(e.target.id === id) $(id).style.display = 'none'; };
+
     window.initiateOrder = function(side) {
-      // 简单校验
-      if(window.quantState.lots <= 0) {
-          alert("计算手数为0，请调整仓位或杠杆");
-          return;
-      }
-
-      window.quantState.pendingSide = side;
+      if(side !== 'PENDING') window.quantState.pendingSide = side;
       quizAnswers = {};
       document.querySelectorAll('.quiz-opt').forEach(el => el.classList.remove('selected'));
       $('quizMask').style.display = 'flex';
     };
 
     window.selectQuiz = function(el, qIndex, answer) {
-      const parent = el.parentElement;
-      parent.querySelectorAll('.quiz-opt').forEach(opt => opt.classList.remove('selected'));
+      el.parentElement.querySelectorAll('.quiz-opt').forEach(opt => opt.classList.remove('selected'));
       el.classList.add('selected');
       quizAnswers[qIndex] = answer;
     };
 
     window.confirmOrderAfterQuiz = function() {
-      if(Object.keys(quizAnswers).length < 3) return alert('请先完成所有风控自检题！');
+      if(Object.keys(quizAnswers).length < 2) return alert('请先完成风控检查！');
       $('quizMask').style.display = 'none';
-      const formData = window.getFormInputs();
       
-      // 显式将 marginPct 设置为 0，确保后端使用 lots 字段
-      // 注意：必须从 input 获取最新值，window.quantState.lots 有时未同步
-      let lotsToSend = 0.01;
-      const inpLots = $('inpLots');
-      if(inpLots) {
-          lotsToSend = parseFloat(inpLots.value) || 0.01;
-      } else {
-          lotsToSend = window.quantState.lots || 0.01;
-      }
+      const lotsToSend = parseFloat($('inpLots').value) || 0.01;
+      const params = {
+          inpPrice: parseFloat($('inpPrice').value) || 0,
+          inpTp: parseFloat($('inpTp').value) || 0,
+          inpSl: parseFloat($('inpSl').value) || 0,
+          inpTTL: parseFloat($('inpTTL').value) || 0
+      };
       
       window.API.submitOrder(
-        $('symName').innerText, 
+        $('tradeSym').innerText, 
         window.quantState.pendingSide, 
         window.quantState.orderType, 
-        0, // marginPct
-        window.quantState.leverage, 
-        lotsToSend,
-        { quiz: quizAnswers, ...formData }
-      ).then((res) => {
-        if(res.success) {
-            alert(`指令发送成功！`);
-            // 刷新订单列表
-            window.refreshData(); 
-        } else {
-            alert("发送失败: " + res.message);
-        }
+        0, 20, lotsToSend, params
+      ).then(res => {
+        if(res.success) { alert('指令发送成功'); refreshData(); }
+        else alert('发送失败: ' + res.message);
       });
     };
 
-    window.getFormInputs = function() {
-      const area = $('dynamicFormArea');
-      const inputs = area.querySelectorAll('input');
-      const data = {};
-      inputs.forEach((input) => {
-        if(input.id) data[input.id] = input.value;
-      });
-      return data;
-    };
-
-    window.openModifyOrderPanel = function(ticket, lots) {
-      // 这里简化处理，实际应该传入当前持仓信息
-      // 暂时假设只有一个持仓被选中修改
-      const currentLots = lots || 1.0;
-      const tpSlider = $('tpLotsSlider');
-      const slSlider = $('slLotsSlider');
-      
-      // 辅助函数：近似凑整 (例如 0.01)
-      const roundLots = (val) => Math.round(val * 100) / 100;
-      
-      tpSlider.max = currentLots; tpSlider.value = currentLots;
-      slSlider.max = currentLots; slSlider.value = currentLots;
-      
-      // 更新文本的函数
-      const updateTpText = () => {
-          let val = roundLots(parseFloat(tpSlider.value));
-          $('tpLotsText').innerText = val.toFixed(2) + " 手";
-      };
-      const updateSlText = () => {
-          let val = roundLots(parseFloat(slSlider.value));
-          $('slLotsText').innerText = val.toFixed(2) + " 手";
-      };
-      
-      // 初始化文本
-      updateTpText();
-      updateSlText();
-      
-      // 绑定事件 (实时反馈)
-      tpSlider.oninput = updateTpText;
-      slSlider.oninput = updateSlText;
-      
-      // 存储当前修改的Ticket
-      window.currentModifyTicket = ticket;
-      
-      $('modifyMask').style.display = 'flex';
-    };
-
-    window.submitModifyOrder = function() {
-      const tpP = $('modTpPrice').value; const tpL = $('tpLotsSlider').value;
-      const slP = $('modSlPrice').value; const slL = $('slLotsSlider').value;
-      
-      if(!window.currentModifyTicket) return;
-      
-      window.API.modifyPosition(window.currentModifyTicket, tpP, tpL, slP, slL).then((res) => {
-        if(res.success) {
-            alert("修改指令已发送");
-            $('modifyMask').style.display = 'none';
-        } else {
-            alert("修改失败: " + res.message);
-        }
-      });
-    };
-
-    window.executeLockPosition = function() {
-      // 锁仓逻辑简化，直接发送锁仓请求
-      if(!window.currentModifyTicket) return;
-      
-      if (confirm('警告：锁定后将禁止手动操作该仓位，必须等待止盈止损自动结算，是否继续？')) {
-        window.API.lockPosition(window.currentModifyTicket).then((res) => {
-          alert(res.message);
-          $('modifyMask').style.display = 'none';
-        });
-      }
-    };
-
-    window.openCalendar = function() {
-      $('calendarMask').style.display = 'flex';
-      window.renderCalendar();
-    };
-
-    window.renderCalendar = async function() {
-      const grid = $('calGrid');
-      grid.innerHTML = '';
-      const now = new Date();
-      $('calTitle').innerText = `${now.getFullYear()} 年 ${now.getMonth()+1} 月`;
-      
-      // 简单日历生成，未严格对齐星期
-      for(let i=0; i<3; i++) grid.innerHTML += `<div class="cal-day empty"></div>`;
-      
-      const data = await window.API.getCalendarPnL(now.getFullYear(), now.getMonth()+1);
-      
-      for(let i=1; i<=31; i++) {
-        let pnlStr = '';
-        if(data[i]) {
-          const val = parseFloat(data[i]);
-          const color = val > 0 ? 'var(--green)' : 'var(--red)';
-          const sign = val > 0 ? '+' : '';
-          pnlStr = `<div class="cal-pnl" style="color:${color}">${sign}${val}</div>`;
-        }
-        grid.innerHTML += `
-          <div class="cal-day">
-            <div class="cal-date">${i}</div>
-            ${pnlStr}
-          </div>
-        `;
-      }
-    };
-
-    window.checkTradeTime = function() {
-        const now = new Date();
-        const h = now.getHours();
-        
-        // 1. 基础时间限制 (已关闭)
-        const isTimeRestricted = false; 
-        // const isTimeRestricted = (h >= 0 && h < 5); 
-        
-        // 2. 后端风控状态 (从 refreshData 获取)
-        const riskStatus = window.quantState ? window.quantState.riskStatus : 'normal';
-        const riskMsg = window.quantState ? window.quantState.riskMsg : '';
-        
-        // 综合判断是否限制交易
-        // 优先级: 熔断 > 冷静期 > 时间限制
-        let isRestricted = false;
-        let title = "交易已暂停";
-        let subTitle = "每日 0:00 - 5:00 为系统维护时段";
-        let slogan = "为人民服务";
-        
-        if (riskStatus === 'fused') {
-            isRestricted = true;
-            title = "触发熔断机制";
-            subTitle = "当日累计亏损超限或连续亏损，交易已停止";
-            slogan = "熔断保护中";
-        } else if (riskStatus === 'cooldown') {
-            isRestricted = true;
-            title = "处于冷静期";
-            subTitle = "连续亏损触发强制冷静，请休息片刻";
-            slogan = "冷静期";
-        } else if (isTimeRestricted) {
-            isRestricted = true;
-            // 使用默认文案
-        }
-        
-        const mainGrid = document.querySelector('.main-grid');
-        const nightMode = document.getElementById('nightMode');
-        
-        if (isRestricted) {
-            if (mainGrid) mainGrid.style.display = 'none';
-            
-            // 如果已经存在提示页，检查是否需要更新内容 (例如从时间限制变成了熔断)
-            if (nightMode) {
-                const currentTitle = nightMode.querySelector('.night-title').innerText;
-                if (currentTitle !== title) {
-                    nightMode.remove(); // 移除旧的，重新创建
-                }
-            }
-            
-            if (!document.getElementById('nightMode')) {
-                // 插入占位图
-                const div = document.createElement('div');
-                div.id = 'nightMode';
-                div.style.textAlign = 'center';
-                div.style.padding = '3rem 1rem';
-                div.innerHTML = `
-                    <div style="font-size: 2.5rem; margin-bottom: 1rem;">😴</div>
-                    <div class="night-title" style="font-size: 1.5rem; font-weight: 800; color: var(--text); margin-bottom: 0.5rem;">${title}</div>
-                    <div style="color: var(--muted); font-weight: 600;">${subTitle}</div>
-                    <div style="margin-top: 2rem; font-family: 'STKaiti', serif; font-size: 2rem; color: #d4af37; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">${slogan}</div>
-                    <div class="night-time" style="margin-top: 0.5rem; font-family: monospace; color: var(--muted); font-size: 1.25rem;">${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}</div>
-                `;
-                // 插入到 main-grid 之后
-                if(mainGrid && mainGrid.parentNode) {
-                    mainGrid.parentNode.insertBefore(div, mainGrid.nextSibling);
-                }
-            } else {
-                // 仅更新时间
-                const timeEl = document.querySelector('.night-time');
-                if(timeEl) timeEl.innerText = `${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
-            }
-        } else {
-            if (mainGrid) mainGrid.style.display = 'flex';
-            if (document.getElementById('nightMode')) document.getElementById('nightMode').remove();
-        }
-    };
-
-    window.onload = () => {
-      // 启动时间检查
-      setInterval(window.checkTradeTime, 1000);
-      window.checkTradeTime();
-
-      // 默认使用市价单，避免用户不填价格导致拒单
-      window.setOrderType('market', '市价');
-      const marginSlider = $('marginSlider');
-      if(marginSlider) {
-        // 初始化 max
-        const maxVal = Math.floor(window.quantState.availMargin > 0 ? window.quantState.availMargin : 100);
-        marginSlider.max = maxVal;
-        
-        const updateSliderTrack = (el) => {
-            const pct = (el.value / el.max) * 100;
-            el.style.setProperty('--track-fill', pct + '%');
-        };
-        
-        updateSliderTrack(marginSlider);
-        
-        marginSlider.oninput = function() {
-          // 近似凑整：取整
-          let val = Math.round(parseFloat(this.value));
-          this.value = val; 
-          window.quantState.marginPct = val; // 这里 marginPct 实际存的是金额
-          updateSliderTrack(this);
-          window.updateCalculations();
-        };
-      }
-      const levSlider = $('levSlider');
-      if(levSlider) {
-        levSlider.style.setProperty('--track-fill', (levSlider.value / levSlider.max * 100) + '%');
-        levSlider.oninput = function() {
-          window.quantState.leverage = parseInt(this.value);
-          this.style.setProperty('--track-fill', (this.value / this.max * 100) + '%');
-          $('levTextModal').innerText = window.quantState.leverage;
-          $('btnLev').innerText = `杠杆 ${window.quantState.leverage}x ▼`;
-          window.updateCalculations();
-        };
-      }
-      window.updateCalculations();
-      
-      // 启动自动刷新
-      setInterval(refreshData, 3000);
-      refreshData();
-    };
-
-    window.switchMainTab = function(el) { document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active')); el.classList.add('active'); };
-    window.switchBottomTab = function(target) {
-      document.querySelectorAll('.segTabs .seg').forEach(el => el.classList.remove('active'));
-      event.target.classList.add('active');
-      const listPos = $('list-positions');
-      const listOrd = $('list-orders');
-      const listHist = $('list-history');
-      if(listPos) listPos.style.display = (target === 'positions' ? 'block' : 'none');
-      if(listOrd) listOrd.style.display = (target === 'orders' ? 'block' : 'none');
-      if(listHist) listHist.style.display = (target === 'history' ? 'block' : 'none');
-      
-      if(target === 'history') {
-          fetchHistoryTrades();
-      }
-    };
-    window.closeModal = function(e, id) { if(e.target.id === id) $(id).style.display = 'none'; };
-    window.closeErrorPopup = function(e) { if(e.target.id === 'errorPopup') $('errorPopup').classList.remove('show'); };
-
-    const categoryPairs = {
-      'forex': [
-        { name: 'USDCHF', price: 0.8840 }, { name: 'GBPUSD', price: 1.2640 }, { name: 'EURUSD', price: 1.0850 },
-        { name: 'USDJPY', price: 149.50 }, { name: 'USDCAD', price: 1.3580 }, { name: 'AUDUSD', price: 0.6520 },
-        { name: 'EURGBP', price: 0.8580 }, { name: 'EURAUD', price: 1.6533 }, { name: 'EURCHF', price: 0.9050 },
-        { name: 'EURJPY', price: 162.74 }, { name: 'GBPCHF', price: 1.0418 }, { name: 'CADJPY', price: 115.48 },
-        { name: 'GBPJPY', price: 210.35 }, { name: 'AUDNZD', price: 1.1918 }, { name: 'AUDCAD', price: 0.9568 },
-        { name: 'AUDCHF', price: 0.5473 }, { name: 'AUDJPY', price: 110.51 }, { name: 'CHFJPY', price: 201.88 },
-        { name: 'EURNZD', price: 1.9707 }, { name: 'EURCAD', price: 1.5822 }, { name: 'CADCHF', price: 0.5719 },
-        { name: 'NZDJPY', price: 92.715 }, { name: 'NZDUSD', price: 0.5872 }, { name: 'GBPAUD', price: 1.9032 },
-        { name: 'GBPCAD', price: 1.8213 }, { name: 'GBPNZD', price: 2.2686 }, { name: 'NZDCAD', price: 0.8027 },
-        { name: 'NZDCHF', price: 0.4591 }, { name: 'USDSGD', price: 1.2805 }, { name: 'USDHKD', price: 7.8190 },
-        { name: 'USDCNH', price: 6.9147 }
-      ],
-      'index': [
-        { name: 'U30USD', price: 47836.1 }, { name: 'NASUSD', price: 24922.8 }, { name: 'SPXUSD', price: 6803.72 },
-        { name: '100GBP', price: 10428.9 }, { name: 'D30EUR', price: 23822.2 }, { name: 'E50EUR', price: 5773.4 },
-        { name: 'H33HKD', price: 25503.1 }
-      ],
-      'commodity': [
-        { name: 'UKOUSD', price: 87.358 }, { name: 'USOUSD', price: 84.290 }
-      ],
-      'metal': [
-        { name: 'XAGUSD', price: 82.764 }, { name: 'XAUUSD', price: 5081.60 }
-      ],
-      'crypto': [
-        { name: 'BTCUSD', price: 70594 }, { name: 'BCHUSD', price: 456.94 }, { name: 'RPLUSD', price: 1.4003 },
-        { name: 'LTCUSD', price: 55.28 }, { name: 'ETHUSD', price: 2061.8 }, { name: 'XMRUSD', price: 357.28 },
-        { name: 'BNBUSD', price: 641.10 }, { name: 'SOLUSD', price: 87.506 }, { name: 'LNKUSD', price: 9.123 },
-        { name: 'XSIUSD', price: 0.201 }, { name: 'DOGUSD', price: 0.0933 }, { name: 'ADAUSD', price: 0.2673 },
-        { name: 'AVEUSD', price: 116.35 }, { name: 'DSHUSD', price: 34.063 }
-      ],
-      'stock': [
-        { name: 'AAPL', price: 260.39 }, { name: 'AMZN', price: 218.76 }, { name: 'BABA', price: 130.22 },
-        { name: 'GOOGL', price: 301.18 }, { name: 'META', price: 660.93 }, { name: 'MSFT', price: 410.64 },
-        { name: 'NFLX', price: 99.14 }, { name: 'NVDA', price: 178.51 }, { name: 'TSLA', price: 405.46 },
-        { name: 'ABBV', price: 232.09 }, { name: 'ABNB', price: 135.71 }, { name: 'ABT', price: 110.86 },
-        { name: 'ADBE', price: 281.64 }, { name: 'AMD', price: 198.97 }, { name: 'AVGO', price: 332.70 },
-        { name: 'C', price: 108.86 }, { name: 'CRM', price: 201.29 }, { name: 'DIS', price: 102.35 },
-        { name: 'GS', price: 835.15 }, { name: 'INTC', price: 45.80 }, { name: 'JNJ', price: 239.52 },
-        { name: 'MA', price: 524.28 }, { name: 'MCD', price: 327.32 }, { name: 'KO', price: 76.91 },
-        { name: 'MMM', price: 156.12 }, { name: 'NIO', price: 4.56 }, { name: 'PLTR', price: 152.50 },
-        { name: 'SHOP', price: 134.68 }, { name: 'TSM', price: 344.40 }, { name: 'V', price: 319.47 }
-      ]
-    };
-    const categoryNames = { 'forex': '外汇', 'index': '指数', 'commodity': '大宗商品', 'metal': '贵金属', 'crypto': '虚拟货币', 'stock': '股票' };
-
-    let quoteInterval;
-
-    window.showCategoryPairs = function(category) {
-      const container = $('pairListContainer');
-      const title = $('pairModalTitle');
-      const pairs = categoryPairs[category] || [];
-      title.innerText = '选择' + (categoryNames[category] || '交易品种');
-      let html = '';
-      pairs.forEach(pair => {
-        html += `<div class="select-item" onclick="setSymbol('${pair.name}', ${pair.price})">${pair.name}</div>`;
-      });
-      container.innerHTML = html;
-      $('pairMask').style.display = 'flex';
-    };
-
-    // 新增：打开当前分类的品种列表
-    window.openCurrentCategoryPairs = function() {
-        const activeTab = document.querySelector('.tabs .tab.active');
-        const category = activeTab ? activeTab.getAttribute('data-category') : 'metal'; // 默认 metal
-        window.showCategoryPairs(category);
-    };
-
-    window.setSymbol = function(name, price) {
-      $('symName').innerText = name; 
-      window.quantState.price = price;
-      $('midPriceText').innerText = price.toFixed(name === 'XAUUSD' ? 2 : 4);
-      $('pairMask').style.display = 'none';
-      window.updateCalculations();
-      
-      // 停止旧的轮询
-      if(quoteInterval) {
-          clearInterval(quoteInterval);
-          quoteInterval = null;
-      }
-      
-      // 立即发送一次报价请求
-      window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {}); 
-      
-      // 启动新的轮询
-      quoteInterval = setInterval(() => {
-          window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {});
-      }, 1000);
-      
-      // 立即刷新页面数据，以便 latest_status 能拿到新 symbol 的数据
-      // 注意：由于后端是异步处理 quote，这里延迟一点点刷新可能更好，或者依赖每3秒的自动刷新
-      // 这里手动调一次 refreshData 也可以，但可能拿到的是旧数据
-      setTimeout(refreshData, 500);
-    };
-    
-    // 自动刷新数据
-    async function refreshData() {
-        // 更新系统时间
-        const now = new Date();
-        const timeStr = now.getFullYear() + '-' +
-            String(now.getMonth()+1).padStart(2, '0') + '-' +
-            String(now.getDate()).padStart(2, '0') + ' ' +
-            String(now.getHours()).padStart(2, '0') + ':' +
-            String(now.getMinutes()).padStart(2, '0') + ':' +
-            String(now.getSeconds()).padStart(2, '0');
-        const timeEl = $('sysTime');
-        if(timeEl) timeEl.innerText = timeStr;
-
-        // 记录性能开始时间
-        const startTime = performance.now();
-        
+    // --- Backend API Wrappers ---
+    window.API = {
+      submitOrder: async function(symbol, side, type, marginPct, leverage, lots, params) {
         try {
-            // 获取当前选中的品种
-            const currentSym = $('symName').innerText;
-            // 修复：添加 symbol 参数，确保后端只返回该品种的最新报价
-            console.log(`[Frontend] request latest_status symbol=${currentSym}`);
-            const res = await fetch(`/api/latest_status?symbol=${currentSym}`);
-            
-            if(!res.ok) throw new Error(`HTTP ${res.status}`);
-            
+          const res = await fetch('/api/v1/order', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol, side, type, marginPct, leverage, lots, ...params })
+          });
+          return await res.json();
+        } catch (e) { return { success: false, message: 'Network error' }; }
+      },
+      modifyPosition: async function(positionId, tpPrice, slPrice) {
+        try {
+          const res = await fetch('/api/v1/position/modify', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ positionId, tpPrice, slPrice })
+          });
+          return await res.json();
+        } catch (e) { return { success: false }; }
+      },
+      cancelCommand: async function(id) { alert("暂不支持前端撤单"); }
+    };
+
+    async function refreshData() {
+        try {
+            const sym = $('tradeSym').innerText;
+            const res = await fetch(`/api/latest_status?symbol=${sym}`);
+            if(!res.ok) return;
             const data = await res.json();
             
-            // 记录性能结束时间并打印日志 (性能监控)
-            const endTime = performance.now();
-            // console.log(`[Perf] RefreshData took ${(endTime - startTime).toFixed(2)}ms`);
-
             if(data) {
-                // 注入 symbol_rules (重要)
-                if (data.symbol_rules) {
-                    window.quantState.symbolRules = data.symbol_rules;
-                    // console.log("[Frontend] symbol_rules loaded", data.symbol_rules);
-                } else {
-                    console.warn("[Frontend] symbol_rules missing in response");
+                $('valBalance').innerText = fmtNum(data.balance, 2);
+                $('valEquity').innerText = fmtNum(data.equity, 2);
+                $('valFreeMargin').innerText = fmtNum(data.free_margin, 2);
+                $('valHistBalance').innerText = fmtNum(data.balance, 2);
+                $('valProfit').innerText = fmtNum(data.daily_pnl, 2);
+                
+                if(data.latest_quote) {
+                    window.quantState.price = data.latest_quote.bid;
+                    $('tBid').innerText = fmtNum(data.latest_quote.bid, sym==='XAUUSD'?2:4);
+                    $('tAsk').innerText = fmtNum(data.latest_quote.ask, sym==='XAUUSD'?2:4);
+                    
+                    // 同步更新行情列表中的价格
+                    if($('q_bid_'+sym)) $('q_bid_'+sym).innerText = fmtNum(data.latest_quote.bid, sym==='XAUUSD'?2:4);
+                    if($('q_ask_'+sym)) $('q_ask_'+sym).innerText = fmtNum(data.latest_quote.ask, sym==='XAUUSD'?2:4);
                 }
-
-                // 更新账户数据
-                const equity = data.equity || 0;
-                const freeMargin = data.free_margin || 0;
-                
-                window.quantState.equity = equity;
-                window.quantState.availMargin = freeMargin;
-                
-                // 更新滑轮 max
-                const marginSlider = $('marginSlider');
-                if(marginSlider) {
-                    const maxVal = Math.floor(freeMargin > 0 ? freeMargin : 100);
-                    if(parseFloat(marginSlider.max) !== maxVal) {
-                        marginSlider.max = maxVal;
-                    }
-                }
-                
-                $('equityVal').innerText = fmtNum(equity, 2);
-                $('availMarginStr').innerText = fmtNum(freeMargin, 2);
-                $('formAvail').innerText = fmtNum(freeMargin, 2);
-                
-                $('dailyPnlVal').innerText = (data.daily_pnl > 0 ? '+' : '') + fmtNum(data.daily_pnl || 0, 2);
-                $('dailyPnlVal').style.color = (data.daily_pnl >= 0 ? 'var(--green)' : 'var(--red)');
-                
-                $('dailyPnlPctVal').innerText = (data.daily_return > 0 ? '+' : '') + fmtNum(data.daily_return || 0, 2) + '%';
-                $('dailyPnlPctVal').style.color = (data.daily_return >= 0 ? 'var(--green)' : 'var(--red)');
-                
-                // 更新持仓列表
                 updatePositionsList(data.positions || []);
                 
-                // 获取待处理委托和历史记录
-                // 注意：这里需要单独请求 /api/pending_commands 和 /api/history_trades
-                // 为了性能，可以降低频率，或者合并请求。这里简单起见，每次 refresh 都请求 pending
-                try {
-                    const pendingRes = await fetch('/api/pending_commands');
-                    if(pendingRes.ok) {
-                        const pendingData = await pendingRes.json();
-                        updatePendingOrdersList(pendingData.commands || []);
-                    }
-                } catch(e) { console.warn("Failed to fetch pending commands", e); }
-                
-                // 历史记录只在 Tab 激活时刷新，或者低频刷新。这里暂不自动刷新，由 Tab 切换触发
-                
-                // 尝试从持仓或历史数据更新当前价格（如果有）
-                let priceUpdated = false;
-                let currentBid = 0;
-                
-                // 优先使用最新的 QUOTE_DATA
-                if(data.latest_quote) {
-                    const quote = data.latest_quote;
-                    // 再次确认 symbol 是否匹配（双重保障）
-                    if (quote.symbol && quote.symbol !== currentSym) {
-                        console.warn(`[Warn] Received quote for ${quote.symbol} but expected ${currentSym}`);
-                    } else {
-                        window.quantState.price = quote.bid;
-                        currentBid = quote.bid;
-                        $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
-                        
-                        // 更新右侧面板双报价
-                        if($('quoteBid')) $('quoteBid').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
-                        if($('quoteAsk')) $('quoteAsk').innerText = fmtNum(quote.ask, currentSym === 'XAUUSD' ? 2 : 4);
-                        
-                        priceUpdated = true;
-                    }
+                const pendingRes = await fetch('/api/pending_commands');
+                if(pendingRes.ok) {
+                    const pendingData = await pendingRes.json();
+                    updatePendingOrdersList(pendingData.commands || []);
                 }
-
-                if(!priceUpdated && data.positions && data.positions.length > 0) {
-                    // 如果当前选中的 symbol 在持仓中，使用其 current_price
-                    const pos = data.positions.find(p => p.symbol === currentSym);
-                    if(pos) {
-                        window.quantState.price = pos.current_price;
-                        currentBid = pos.current_price;
-                        $('midPriceText').innerText = fmtNum(pos.current_price, currentSym === 'XAUUSD' ? 2 : 4);
-                        priceUpdated = true;
-                    }
-                }
-                
-                // --- 新版红绿灯机制 (基于价格停滞检测) ---
-                if (currentBid > 0) {
-                     // 如果价格与上次完全一致
-                     if (currentBid === window.quantState.lastPriceForSignal) {
-                         window.quantState.priceStagnationCount++;
-                     } else {
-                         // 价格变动，重置计数器
-                         window.quantState.priceStagnationCount = 0;
-                         window.quantState.lastPriceForSignal = currentBid;
-                     }
-                     
-                     const count = window.quantState.priceStagnationCount;
-                     const dot = $('latencySignal');
-                     if(dot) {
-                         // 连续5次 (约15s) -> 红灯
-                         if(count >= 5) {
-                             dot.className = 'signal-dot red'; 
-                             dot.title = '断连 (价格停滞 >15s)';
-                         } 
-                         // 连续3次 (约9s) -> 黄灯
-                         else if(count >= 3) {
-                             dot.className = 'signal-dot yellow'; 
-                             dot.title = '延迟 (价格停滞 >9s)';
-                         } 
-                         else {
-                             dot.className = 'signal-dot green'; 
-                             dot.title = '实时';
-                         }
-                     }
-                } else {
-                    // 无价格数据 -> 红灯
-                    const dot = $('latencySignal');
-                    if(dot) {
-                        dot.className = 'signal-dot red'; 
-                        dot.title = '无信号';
-                    }
-                }
-                
-                window.updateCalculations();
             }
-        } catch(e) { 
-            console.error("[Refresh Error]", e);
-            // 降级提示
-            const dot = $('latencySignal');
-            if(dot) {
-                dot.className = 'signal-dot red'; 
-                dot.title = '网络连接错误';
-            }
-        }
+        } catch(e) { console.error("Refresh Error:", e); }
     }
-    
+
     function updatePositionsList(positions) {
-        const list = $('list-positions');
-        if(!positions || positions.length === 0) {
-            list.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无持仓</div>';
-            return;
-        }
-        
-        // 获取锁定列表
-        const lockedList = window.quantState.lockedTickets || [];
-        
         let html = '';
         positions.forEach(pos => {
-            const sideClass = (pos.side && pos.side.toLowerCase() === 'buy') ? 'buy' : 'sell';
-            const profitColor = pos.profit >= 0 ? 'var(--green)' : 'var(--red)';
-            const profitSign = pos.profit >= 0 ? '+' : '';
-            
-            // 检查是否被锁定
-            const isLocked = lockedList.includes(String(pos.ticket));
-            // 锁定状态下：背景变灰，透明度降低
-            const cardStyle = isLocked ? 'background:#f0f0f0; opacity:0.8;' : '';
-            // 锁定状态下：标题增加锁图标
-            const lockIcon = isLocked ? '<span style="margin-left:0.5rem">🔒</span>' : '';
-            // 锁定状态下：修改按钮完全禁用
-            const btnDisabled = isLocked ? 'disabled style="cursor:not-allowed; opacity:0.5;"' : '';
-            // 锁定状态下：平仓按钮完全禁用
-            const btnCloseDisabled = isLocked ? 'disabled style="cursor:not-allowed; opacity:0.5; color:var(--muted); border-color:var(--line);"' : 'style="color: var(--red); border-color: rgba(246,70,93,0.3);"';
+            const isBuy = pos.side.toLowerCase() === 'buy';
+            const symDigits = pos.symbol === 'XAUUSD' || pos.symbol.includes('JPY') ? 2 : 4;
+            const openPrice = parseFloat(pos.open_price).toFixed(symDigits);
+            const currentPrice = parseFloat(pos.current_price).toFixed(symDigits);
             
             html += `
-            <div class="posItem" style="${cardStyle}">
-              <div class="posTop">
-                <div>
-                  <div class="posTitle"><span class="sideTag ${sideClass}">${pos.side}</span> ${pos.symbol} <span class="symBadge" style="background:var(--chip); color:var(--text)">${pos.lots}手</span>${lockIcon}</div>
-                  <div class="mini" style="margin-top: 0.5rem;">浮动盈亏</div>
-                  <div style="font-size: 1.5rem; font-weight: 800; color: ${profitColor};">${profitSign}${fmtNum(pos.profit, 2)}</div>
-                </div>
-                <div style="text-align:right">
-                  <div class="mini">订单号</div>
-                  <div class="big" style="font-family: monospace;">#${pos.ticket}</div>
-                  <div class="mini" style="margin-top:0.375rem">开仓时间 <span style="color:var(--text); font-weight:800">${pos.open_time_str || '-'}</span></div>
-                </div>
+            <div class="pos-item" onclick="openModifyOrder('${pos.ticket}', '${pos.tp}', '${pos.sl}', '${pos.symbol}', '${pos.lots}')">
+              <div class="p-row1">
+                <div><span class="p-sym">${pos.symbol}</span>, <span class="p-type ${isBuy?'buy':'sell'}">${pos.side}</span> <span class="p-lots">${pos.lots}</span></div>
+                <div class="p-profit ${pos.profit>=0?'blue':'red'}">${fmtNum(pos.profit, 2)}</div>
               </div>
-              <div class="posGrid">
-                <div><div class="mini">开仓价</div><div class="big">${pos.open_price}</div></div>
-                <div><div class="mini">当前价</div><div class="big">${pos.current_price}</div></div>
-                <div><div class="mini">止损 (S/L)</div><div class="big">${pos.sl}</div></div>
-                <div><div class="mini">止盈 (T/P)</div><div class="big">${pos.tp}</div></div>
-                <div><div class="mini">占用保证金</div><div class="big">${fmtNum(pos.margin, 2)}</div></div>
-              </div>
-              <div class="posActions">
-                <button class="ghost" ${btnDisabled} onclick="openModifyOrderPanel('${pos.ticket}', ${pos.lots})">修改订单</button>
-                <button class="ghost" ${btnCloseDisabled} onclick="window.API.submitOrder('${pos.symbol}', 'CLOSE', 'market', 0, 0, ${pos.lots}, {ticket: '${pos.ticket}'})">一键平仓</button>
+              <div class="p-row2">
+                <span>${openPrice} → ${currentPrice}</span>
+                <span>#${pos.ticket}</span>
               </div>
             </div>`;
         });
-        list.innerHTML = html;
-        
-        // 更新底部 Tab 数量
-        const tab = document.querySelectorAll('.segTabs .seg')[0];
-        if(tab) tab.innerHTML = `持有仓位 (${positions.length})`;
+        $('list-positions').innerHTML = html || '<div style="padding:15px;text-align:center;color:#888;">暂无持仓</div>';
     }
 
     function updatePendingOrdersList(commands) {
-        const list = $('list-orders');
-        
-        // 过滤掉 quote 类型的指令 (这些是内部轮询指令，不应展示给用户)
-        const visibleCommands = (commands || []).filter(cmd => cmd.action !== 'quote');
-
-        if(visibleCommands.length === 0) {
-            list.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无当前委托挂单</div>';
-            const tab = document.querySelectorAll('.segTabs .seg')[1];
-            if(tab) tab.innerHTML = `当前委托 (0)`;
-            return;
-        }
-
+        const visible = (commands || []).filter(c => c.action !== 'quote');
         let html = '';
-        visibleCommands.forEach(cmd => {
-            const sideClass = (cmd.side && cmd.side.toLowerCase() === 'buy') ? 'buy' : 'sell';
-            const timeStr = new Date(cmd.created_at * 1000).toLocaleTimeString();
-            
+        visible.forEach(cmd => {
+            const isBuy = (cmd.side||'').toLowerCase() === 'buy';
             html += `
-            <div class="posItem">
-              <div class="posTop">
-                <div>
-                  <div class="posTitle"><span class="sideTag ${sideClass}">${cmd.side}</span> ${cmd.symbol} <span class="symBadge" style="background:var(--chip); color:var(--text)">${cmd.volume}手</span></div>
-                  <div class="mini" style="margin-top: 0.5rem;">类型: ${cmd.action}</div>
-                </div>
-                <div style="text-align:right">
-                  <div class="mini">指令ID</div>
-                  <div class="big" style="font-family: monospace;">#${cmd.id}</div>
-                  <div class="mini" style="margin-top:0.375rem">${timeStr}</div>
-                </div>
+            <div class="pos-item">
+              <div class="p-row1">
+                <div><span class="p-sym">${cmd.symbol}</span>, <span class="p-type ${isBuy?'buy':'sell'}">${cmd.action} ${cmd.side||''}</span> <span class="p-lots">${cmd.volume}</span></div>
+                <div class="p-profit" style="color:var(--red)" onclick="window.API.cancelCommand('${cmd.id}')">撤单</div>
               </div>
-              <div class="posActions">
-                <button class="ghost" style="color: var(--red); border-color: rgba(246,70,93,0.3);" onclick="window.API.cancelCommand('${cmd.id}')">撤单</button>
+              <div class="p-row2">
+                <span>${cmd.price || 'Market'}</span>
+                <span>${new Date(cmd.created_at*1000).toLocaleTimeString()}</span>
               </div>
             </div>`;
         });
-        list.innerHTML = html;
-        
-        const tab = document.querySelectorAll('.segTabs .seg')[1];
-        if(tab) tab.innerHTML = `当前委托 (${visibleCommands.length})`;
+        $('list-orders').innerHTML = html || '<div style="padding:15px;text-align:center;color:#888;">暂无订单</div>';
     }
 
     async function fetchHistoryTrades() {
         try {
             const res = await fetch('/api/history_trades?limit=50');
-            if(res.ok) {
-                const data = await res.json();
-                renderHistoryList(data.trades || []);
-            }
-        } catch(e) { console.error("Fetch history failed", e); }
+            const data = await res.json();
+            renderHistoryList(data.trades || []);
+        } catch(e) {}
     }
 
     function renderHistoryList(trades) {
-        const list = $('list-history');
-        if(!trades || trades.length === 0) {
-            list.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无历史委托记录</div>';
-            return;
-        }
-
         let html = '';
-        trades.forEach(trade => {
-            // 过滤掉 quote 指令 (新版 ID 以 q_ 开头)
-            if(String(trade.cmd_id).startsWith('q_')) return;
+        trades.forEach(t => {
+            if(String(t.cmd_id).startsWith('q_')) return;
             
-            // 解析 message JSON
-            let detail = "";
+            let detail = t.message || '';
             try {
-                if(trade.message && trade.message.startsWith('{')) {
-                    // 尝试解析 JSON 里的关键信息，或者直接显示 message
-                    detail = trade.message; 
-                } else {
-                    detail = trade.message || "";
+                if(detail.startsWith('{')) {
+                    const obj = JSON.parse(detail);
+                    detail = `[${obj.symbol || ''}] ${obj.action || ''} ${obj.volume || ''}手 <br/> 价格: ${obj.price || obj.open_price || ''} <br/> 利润: ${obj.profit || ''}`;
                 }
             } catch(e) {}
-            
-            const statusColor = trade.ok ? 'var(--green)' : 'var(--red)';
-            const statusText = trade.ok ? '成功' : '失败';
 
             html += `
-            <div class="posItem">
-              <div class="posTop">
-                <div>
-                  <div class="posTitle" style="font-size:1rem;">指令 #${trade.cmd_id}</div>
-                  <div class="mini" style="margin-top: 0.5rem;">状态: <span style="color:${statusColor};font-weight:800">${statusText}</span></div>
-                </div>
-                <div style="text-align:right">
-                  <div class="mini">MT4 Ticket</div>
-                  <div class="big" style="font-family: monospace;">${trade.ticket || '-'}</div>
-                  <div class="mini" style="margin-top:0.375rem">${trade.received_at}</div>
-                </div>
+            <div class="pos-item">
+              <div class="p-row1">
+                <div><span class="p-sym">#${t.cmd_id}</span> <span class="p-type ${t.ok?'buy':'sell'}">${t.ok?'成功':'失败'}</span></div>
+                <div class="p-profit" style="color:var(--muted);font-size:12px">${t.received_at}</div>
               </div>
-              <div style="font-size:0.875rem; color:var(--text); word-break:break-all; background:var(--chip); padding:0.5rem; border-radius:0.5rem;">
-                ${detail}
-                ${trade.error ? `<div style="color:var(--red);margin-top:0.25rem">Err: ${trade.error}</div>` : ''}
-              </div>
-              <div class="posActions" style="margin-top: 0.75rem;">
-                <button class="ghost" style="color: var(--red); border-color: rgba(246,70,93,0.3);" onclick="deleteHistoryTrade('${trade.cmd_id}')">删除记录</button>
+              <div class="p-row2">
+                <span style="flex:1;word-break:break-all;">${detail}</span>
               </div>
             </div>`;
         });
-        list.innerHTML = html;
+        $('list-history').innerHTML = html || '<div style="padding:15px;text-align:center;color:#888;">暂无记录</div>';
     }
 
-    window.deleteHistoryTrade = function(cmdId) {
-        const pwd = prompt("请输入管理密码以删除此记录:", "");
-        if (!pwd) return;
-        
-        fetch('/api/history_trades/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cmd_id: cmdId, password: pwd })
-        })
-        .then(res => res.json())
-        .then(data => {
-            if(data.success) {
-                alert("删除成功");
-                fetchHistoryTrades();
-            } else {
-                alert("删除失败: " + data.message);
-            }
-        })
-        .catch(err => {
-            console.error(err);
-            alert("网络错误");
-        });
+    window.openModifyOrder = function(ticket, tp, sl, symbol, lots) {
+        window.quantState.currentModifyTicket = ticket;
+        window.quantState.currentModifySymbol = symbol;
+        window.quantState.currentModifyLots = parseFloat(lots) || 0;
+        $('modTpPrice').value = tp && tp !== 'undefined' && tp !== '0' ? tp : '';
+        $('modSlPrice').value = sl && sl !== 'undefined' && sl !== '0' ? sl : '';
+        $('modifyMask').style.display = 'flex';
     };
 
-    // 补充 API
-    window.API.cancelCommand = async function(index) {
-        // 这里的 index 其实是 id，但在旧版 API 里是 index。为了兼容，我们暂时只能删除 index
-        // 但为了准确，应该重构后端支持按 ID 删除。
-        // 这里假设前端拿到的是 list index，或者后端新增按 ID 删除接口。
-        // 既然没有按 ID 删除接口，我们先调用 /delete_command/<index>
-        // 为了找到 index，我们需要在 commands 数组里查找
-        // 这里的 commands 是 updatePendingOrdersList 里的局部变量，无法直接访问
-        // 简化：重刷页面或提示不支持
-        alert("暂不支持撤单");
+    window.submitModifyOrder = function() {
+        if(!window.quantState.currentModifyTicket) return;
+        const tp = parseFloat($('modTpPrice').value) || 0;
+        const sl = parseFloat($('modSlPrice').value) || 0;
+        window.API.modifyPosition(window.quantState.currentModifyTicket, tp, sl)
+        .then(res => {
+            if(res.success) { alert('已发送修改'); $('modifyMask').style.display='none'; refreshData(); }
+            else alert(res.message);
+        });
     };
+    
+    window.closePosition = function() {
+        if(!window.quantState.currentModifyTicket) return;
+        const sym = window.quantState.currentModifySymbol || $('tradeSym').innerText;
+        const lots = window.quantState.currentModifyLots || 0;
+        window.API.submitOrder(sym, 'CLOSE', 'market', 0, 20, lots, {ticket: window.quantState.currentModifyTicket})
+        .then(res => {
+            if(res.success) { alert('已发送平仓指令'); $('modifyMask').style.display='none'; refreshData(); }
+            else alert(res.message);
+        });
+    }
   </script>
 </body>
 </html>"""
@@ -2966,7 +2016,7 @@ def submit_order_v1():
         print(f"[ORDER] Calc lots failed or 0, fallback to frontend lots")
         lots = float(data.get('lots', 0))
     
-    if lots <= 0:
+    if lots <= 0 and side_raw != 'CLOSE':
         print(f"[ORDER][REJECT] Invalid lots: {lots}")
         return jsonify({"success": False, "message": "计算手数无效，请检查投入金额或价格"}), 400
 
