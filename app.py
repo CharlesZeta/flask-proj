@@ -1113,6 +1113,23 @@ HTML_TEMPLATE = r"""<!doctype html>
     .top-bar-title { flex: 1; }
     .top-bar-actions { display: flex; gap: 15px; font-size: 24px; color: var(--blue); cursor: pointer; }
     .top-bar-actions span:active { opacity: 0.7; }
+
+    /* 实时时钟 */
+    .top-clock {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 12px; font-weight: 500; color: var(--muted);
+      font-variant-numeric: tabular-nums; letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+    .clock-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); flex-shrink: 0;
+      animation: dotPulse 1.5s ease-in-out infinite;
+    }
+    @keyframes dotPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.35; transform: scale(0.7); }
+    }
     .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; height: 55px; background: var(--nav-bg); border-top: 1px solid var(--line); display: flex; justify-content: space-around; align-items: center; z-index: 100; padding-bottom: env(safe-area-inset-bottom); }
     .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--muted); font-size: 10px; cursor: pointer; flex: 1; }
     .nav-item.active { color: var(--blue); }
@@ -1283,6 +1300,11 @@ HTML_TEMPLATE = r"""<!doctype html>
 <body>
   <div class="top-bar">
     <div class="top-bar-title" id="topBarTitle">行情</div>
+    <div class="top-clock">
+      <div class="clock-dot"></div>
+      <span id="liveClock">--:--:--</span>
+      <span style="font-size:10px;color:#b0b0b5;">UTC+8</span>
+    </div>
     <div class="top-bar-actions" id="quotesActions">
       <span onclick="openAddSymbol()">+</span>
       <span id="btnEditQuotes" onclick="toggleEditQuotes()">✎</span>
@@ -1634,6 +1656,17 @@ HTML_TEMPLATE = r"""<!doctype html>
       selectSymbol('XAUUSD', 'Spot Gold');
       setInterval(refreshData, 1500);
       setInterval(refreshAllQuotes, 1500);
+
+      // 东八区实时时钟，每秒更新
+      function tickClock() {
+        const now = new Date(Date.now() + 8 * 3600 * 1000);
+        const hh = String(now.getUTCHours()).padStart(2, '0');
+        const mm = String(now.getUTCMinutes()).padStart(2, '0');
+        const ss = String(now.getUTCSeconds()).padStart(2, '0');
+        $('liveClock').innerText = `${hh}:${mm}:${ss}`;
+      }
+      tickClock();
+      setInterval(tickClock, 1000);
     };
 
     function renderQuotes() {
