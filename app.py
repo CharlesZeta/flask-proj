@@ -261,14 +261,39 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
                 # 排除 QUOTE_DATA 和 INTERNAL 类型，以及 quote 指令报告(q_开头)
                 cmd_id_str = str(parsed.get("cmd_id", ""))
                 if desc != "QUOTE_DATA" and record.get("method") != "INTERNAL" and parsed.get("cmd_id") and not cmd_id_str.startswith("q_"):
+                    # 尝试从 message 字段中解析出额外信息（EA 可能把详情塞在 JSON message 里）
+                    msg_extra = {}
+                    try:
+                        raw_msg = parsed.get("message", "")
+                        if isinstance(raw_msg, str) and raw_msg.startswith("{"):
+                            msg_extra = json.loads(raw_msg)
+                    except Exception:
+                        pass
+                    def _pick(*keys):
+                        """依次从 parsed / msg_extra 里取第一个非 None 值"""
+                        for k in keys:
+                            v = parsed.get(k)
+                            if v is not None: return v
+                            v = msg_extra.get(k)
+                            if v is not None: return v
+                        return None
                     trade_record = {
                         "received_at": record.get("received_at"),
-                        "cmd_id": parsed.get("cmd_id"),
-                        "ok": parsed.get("ok"),
-                        "ticket": parsed.get("ticket"),
-                        "error": parsed.get("error"),
-                        "message": parsed.get("message"),
-                        "exec_ms": parsed.get("exec_ms"),
+                        "cmd_id":      parsed.get("cmd_id"),
+                        "ok":          parsed.get("ok"),
+                        "ticket":      _pick("ticket"),
+                        "error":       _pick("error"),
+                        "message":     parsed.get("message"),
+                        "exec_ms":     _pick("exec_ms"),
+                        # —— 扩展字段 ——
+                        "symbol":      _pick("symbol"),
+                        "side":        _pick("side", "type", "action"),
+                        "volume":      _pick("volume", "lots"),
+                        "open_price":  _pick("open_price", "open"),
+                        "close_price": _pick("close_price", "price", "close"),
+                        "open_time":   _pick("open_time"),
+                        "profit":      _pick("profit", "pnl"),
+                        "desc":        parsed.get("desc", ""),
                     }
                     save_history_trade(trade_record)
 
@@ -1209,6 +1234,22 @@ HTML_TEMPLATE = r"""<!doctype html>
     .p-profit.red { color: var(--red); }
     .p-row2 { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); }
 
+    /* History trade card */
+    .h-card { padding: 12px 15px; border-bottom: 1px solid var(--line); }
+    .h-row1 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .h-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: #fff; margin-left: 6px; }
+    .h-badge.buy  { background: var(--blue); }
+    .h-badge.sell { background: var(--red); }
+    .h-badge.ok   { background: var(--green); }
+    .h-badge.fail { background: #aaa; }
+    .h-sym  { font-size: 16px; font-weight: bold; }
+    .h-profit { font-size: 16px; font-weight: bold; }
+    .h-profit.pos { color: var(--green); }
+    .h-profit.neg { color: var(--red); }
+    .h-profit.zero{ color: var(--muted); }
+    .h-row2 { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+    .h-row3 { font-size: 12px; color: var(--muted); }
+
     /* Modals */
     .modalMask { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: flex-end; z-index: 1000; }
     .modal { width: 100%; background: #fff; border-radius: 15px 15px 0 0; padding-bottom: env(safe-area-inset-bottom); animation: slideUp 0.3s ease-out; max-height: 80vh; overflow-y: auto; }
@@ -1530,6 +1571,20 @@ HTML_TEMPLATE = r"""<!doctype html>
       return parseFloat(n).toFixed(d);
     }
 
+    // 根据价格自动计算合适小数位数 —— 统一用这一个函数
+    // < 0.1    → 5位  (小加密如 DOGUSD 0.093)
+    // < 10     → 5位  (外汇如 USDCHF 0.8840, EURUSD 1.1561)
+    // < 100    → 3位  (部分交叉盘如 GBPJPY 210.35)
+    // < 1000   → 2位  (指数/白银如 SPXUSD 6803, XAGUSD 30)
+    // >= 1000  → 2位  (黄金/大指数如 XAUUSD 3300, U30USD 47836)
+    function calcDigits(price) {
+      const p = parseFloat(price);
+      if (isNaN(p) || p <= 0) return 4;
+      if (p < 10)   return 5;
+      if (p < 100)  return 3;
+      return 2;
+    }
+
     const categoryPairs = {
       'Forex': [
         { name: 'USDCHF', desc: 'US Dollar vs Swiss Franc', price: 0.8840, spread: 5, low: 0.8800, high: 0.8900 },
@@ -1770,8 +1825,12 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('tab-' + tabId).classList.add('active');
       el.classList.add('active');
       $('topBarTitle').innerText = title;
-      
+      _activeTab = tabId;  // 记录当前激活 tab，供 refreshData 感知
+
+      // 切换到历史 tab 时立即拉一次最新记录
       if(tabId === 'history') fetchHistoryTrades();
+      // 切换到持仓 tab 时立即刷一次持仓（平仓后切回能立刻看到结果）
+      if(tabId === 'positions') refreshData();
     };
 
     window.selectSymbol = function(name, desc) {
@@ -1876,7 +1935,7 @@ HTML_TEMPLATE = r"""<!doctype html>
           showSuccess(sideType);
           refreshData();
         }
-        else alert('发送失败: ' + res.message);
+        else alert('发送失败: ' + (res.message || '请检查网络或重试'));
       });
     };
 
@@ -1918,11 +1977,13 @@ HTML_TEMPLATE = r"""<!doctype html>
 
           if (!bidEl) continue;   // 该品种不在当前行情列表中
 
-          // 判断小数位数
-          const digits = (q.bid < 10) ? 4 : 2;
+          // parseFloat 保证类型正确（EA 可能以字符串形式上报价格）
+          const bid = parseFloat(q.bid);
+          const ask = parseFloat(q.ask);
+          const digits = calcDigits(bid);
 
-          bidEl.innerText    = q.bid != null ? q.bid.toFixed(digits) : '--';
-          askEl.innerText    = q.ask != null ? q.ask.toFixed(digits) : '--';
+          bidEl.innerText = isNaN(bid) ? '--' : bid.toFixed(digits);
+          askEl.innerText = isNaN(ask) ? '--' : ask.toFixed(digits);
           if (spreadEl) spreadEl.innerText = q.spread != null ? '点差: ' + q.spread : '点差: --';
           if (timeEl)   timeEl.innerText   = q.ts ? new Date(q.ts * 1000).toLocaleTimeString('en-US', {hour12:false}) : '--';
         }
@@ -1973,51 +2034,54 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('successOverlay').classList.remove('show');
     }
 
+    // 当前激活的 tab 名称（quotes / trade / positions / history）
+    let _activeTab = 'quotes';
+
     async function refreshData() {
         try {
             const sym = $('tradeSym').innerText;
             const res = await fetch(`/api/latest_status?symbol=${sym}`);
             if(!res.ok) {
-                // 接收失败 -> 清空显示
                 ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
                 return;
             }
             const data = await res.json();
-            
-            // 判断是否有效数据（非空对象）
+
             const hasData = data && (data.balance !== undefined || data.equity !== undefined);
-            
             if(hasData) {
-                $('valBalance').innerText = fmtNum(data.balance, 2);
-                $('valEquity').innerText = fmtNum(data.equity, 2);
+                $('valBalance').innerText    = fmtNum(data.balance, 2);
+                $('valEquity').innerText     = fmtNum(data.equity, 2);
                 $('valFreeMargin').innerText = fmtNum(data.free_margin, 2);
-                $('valHistBalance').innerText = fmtNum(data.balance, 2);
-                $('valProfit').innerText = fmtNum(data.daily_pnl, 2);
+                $('valHistBalance').innerText= fmtNum(data.balance, 2);
+                $('valProfit').innerText     = fmtNum(data.daily_pnl, 2);
             } else {
-                // 未获取到数据 -> 清空显示
                 ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
             }
-            
+
             if(data) {
                 if(data.latest_quote) {
-                    window.quantState.price = data.latest_quote.bid;
-                    $('tBid').innerText = fmtNum(data.latest_quote.bid, sym==='XAUUSD'?2:4);
-                    $('tAsk').innerText = fmtNum(data.latest_quote.ask, sym==='XAUUSD'?2:4);
-                    
-                    // 同步更新行情列表中的价格
-                    if($('q_bid_'+sym)) $('q_bid_'+sym).innerText = fmtNum(data.latest_quote.bid, sym==='XAUUSD'?2:4);
-                    if($('q_ask_'+sym)) $('q_ask_'+sym).innerText = fmtNum(data.latest_quote.ask, sym==='XAUUSD'?2:4);
+                    const bid = parseFloat(data.latest_quote.bid);
+                    const ask = parseFloat(data.latest_quote.ask);
+                    const dg  = calcDigits(bid);
+                    window.quantState.price = bid;
+                    $('tBid').innerText = isNaN(bid) ? '--' : bid.toFixed(dg);
+                    $('tAsk').innerText = isNaN(ask) ? '--' : ask.toFixed(dg);
+                    if($('q_bid_'+sym)) $('q_bid_'+sym).innerText = isNaN(bid) ? '--' : bid.toFixed(dg);
+                    if($('q_ask_'+sym)) $('q_ask_'+sym).innerText = isNaN(ask) ? '--' : ask.toFixed(dg);
                 }
+                // 持仓始终刷新（平仓后需要及时消失）
                 updatePositionsList(data.positions || []);
-                
+
                 const pendingRes = await fetch('/api/pending_commands');
                 if(pendingRes.ok) {
                     const pendingData = await pendingRes.json();
                     updatePendingOrdersList(pendingData.commands || []);
                 }
+
+                // 历史 tab 激活时自动同步最新记录
+                if(_activeTab === 'history') fetchHistoryTrades();
             }
         } catch(e) {
-            // 网络异常 -> 清空显示
             ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
             console.error("Refresh Error:", e);
         }
@@ -2025,21 +2089,28 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     function updatePositionsList(positions) {
         let html = '';
-        positions.forEach(pos => {
-            const isBuy = pos.side.toLowerCase() === 'buy';
-            const symDigits = pos.symbol === 'XAUUSD' || pos.symbol.includes('JPY') ? 2 : 4;
-            const openPrice = parseFloat(pos.open_price).toFixed(symDigits);
-            const currentPrice = parseFloat(pos.current_price).toFixed(symDigits);
+        (positions || []).forEach(pos => {
+            // Bug Fix #1: null safety — pos.side/open_price/current_price 均可能缺失
+            const side = (pos.side || '').toLowerCase();
+            const isBuy = side === 'buy';
+            const sym   = pos.symbol || '';
+            const symDigits = calcDigits(parseFloat(pos.open_price) || parseFloat(pos.current_price) || 1);
+            const openPrice    = isNaN(parseFloat(pos.open_price))    ? '--' : parseFloat(pos.open_price).toFixed(symDigits);
+            const currentPrice = isNaN(parseFloat(pos.current_price)) ? '--' : parseFloat(pos.current_price).toFixed(symDigits);
+            const ticket = pos.ticket != null ? pos.ticket : '';
+            const tp     = pos.tp   != null ? pos.tp   : 0;
+            const sl     = pos.sl   != null ? pos.sl   : 0;
+            const lots   = pos.lots != null ? pos.lots : 0;
             
             html += `
-            <div class="pos-item" onclick="openModifyOrder('${pos.ticket}', '${pos.tp}', '${pos.sl}', '${pos.symbol}', '${pos.lots}')">
+            <div class="pos-item" onclick="openModifyOrder('${ticket}', '${tp}', '${sl}', '${sym}', '${lots}')">
               <div class="p-row1">
-                <div><span class="p-sym">${pos.symbol}</span>, <span class="p-type ${isBuy?'buy':'sell'}">${pos.side}</span> <span class="p-lots">${pos.lots}</span></div>
-                <div class="p-profit ${pos.profit>=0?'blue':'red'}">${fmtNum(pos.profit, 2)}</div>
+                <div><span class="p-sym">${sym}</span>, <span class="p-type ${isBuy?'buy':'sell'}">${pos.side||''}</span> <span class="p-lots">${lots}</span></div>
+                <div class="p-profit ${(pos.profit||0)>=0?'blue':'red'}">${fmtNum(pos.profit, 2)}</div>
               </div>
               <div class="p-row2">
                 <span>${openPrice} → ${currentPrice}</span>
-                <span>#${pos.ticket}</span>
+                <span>#${ticket}</span>
               </div>
             </div>`;
         });
@@ -2078,24 +2149,83 @@ HTML_TEMPLATE = r"""<!doctype html>
         let html = '';
         trades.forEach(t => {
             if(String(t.cmd_id).startsWith('q_')) return;
-            
-            let detail = t.message || '';
+
+            // —— 尝试从 message 字段补齐缺失信息 ——
+            let msgExtra = {};
             try {
-                if(detail.startsWith('{')) {
-                    const obj = JSON.parse(detail);
-                    detail = `[${obj.symbol || ''}] ${obj.action || ''} ${obj.volume || ''}手 <br/> 价格: ${obj.price || obj.open_price || ''} <br/> 利润: ${obj.profit || ''}`;
-                }
+                const raw = t.message || '';
+                if(raw.startsWith('{')) msgExtra = JSON.parse(raw);
             } catch(e) {}
+            const pick = (...keys) => {
+                for(const k of keys){
+                    if(t[k] != null && t[k] !== '') return t[k];
+                    if(msgExtra[k] != null && msgExtra[k] !== '') return msgExtra[k];
+                }
+                return null;
+            };
+
+            const sym        = pick('symbol') || '--';
+            const side       = (pick('side','type','action') || '').toLowerCase();
+            const vol        = pick('volume','lots');
+            const openPrice  = pick('open_price','open');
+            const closePrice = pick('close_price','price','close');
+            const openTime   = pick('open_time');
+            const profit     = pick('profit','pnl');
+            const ticket     = pick('ticket');
+            const ok         = t.ok;
+
+            // 方向徽章
+            const sideLabel  = side === 'buy' ? 'BUY' : side === 'sell' ? 'SELL' : side.toUpperCase() || '?';
+            const sideCls    = (side === 'buy') ? 'buy' : (side === 'sell') ? 'sell' : 'ok';
+
+            // 盈亏颜色
+            let profitHtml = '--';
+            if(profit != null){
+                const pNum   = parseFloat(profit);
+                const pCls   = pNum > 0 ? 'pos' : pNum < 0 ? 'neg' : 'zero';
+                const pSign  = pNum > 0 ? '+' : '';
+                profitHtml   = `<span class="h-profit ${pCls}">${pSign}${pNum.toFixed(2)}</span>`;
+            }
+
+            // 时间格式化
+            const fmtTime = (ts) => {
+                if(!ts) return '--';
+                const n = typeof ts === 'number' ? ts : parseInt(ts);
+                if(isNaN(n)) return String(ts);  // 可能已经是字符串格式
+                return new Date(n < 1e12 ? n*1000 : n).toLocaleString('zh-CN', {
+                    month:'2-digit', day:'2-digit',
+                    hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+                });
+            };
+
+            // 价格格式化
+            const fmtP = (p) => {
+                if(p == null) return '--';
+                const n = parseFloat(p);
+                return isNaN(n) ? '--' : n.toFixed(n >= 100 ? 2 : 4);
+            };
 
             html += `
-            <div class="pos-item">
-              <div class="p-row1">
-                <div><span class="p-sym">#${t.cmd_id}</span> <span class="p-type ${t.ok?'buy':'sell'}">${t.ok?'成功':'失败'}</span></div>
-                <div class="p-profit" style="color:var(--muted);font-size:12px">${t.received_at}</div>
+            <div class="h-card">
+              <div class="h-row1">
+                <div>
+                  <span class="h-sym">${sym}</span>
+                  <span class="h-badge ${sideCls}">${sideLabel}</span>
+                  <span class="h-badge ${ok?'ok':'fail'}">${ok?'成交':'失败'}</span>
+                  ${vol != null ? `<span style="font-size:13px;color:var(--muted);margin-left:4px">${parseFloat(vol)}手</span>` : ''}
+                </div>
+                <div>${profitHtml}</div>
               </div>
-              <div class="p-row2">
-                <span style="flex:1;word-break:break-all;">${detail}</span>
+              <div class="h-row2">
+                <span>开仓: ${fmtP(openPrice)} → 平仓: ${fmtP(closePrice)}</span>
+                <span>#${ticket || t.cmd_id}</span>
               </div>
+              <div class="h-row3">
+                <span>开仓时间: ${fmtTime(openTime)}</span>
+                &nbsp;·&nbsp;
+                <span>报告时间: ${t.received_at || '--'}</span>
+              </div>
+              ${t.error ? `<div style="font-size:11px;color:var(--red);margin-top:3px">错误: ${t.error}</div>` : ''}
             </div>`;
         });
         $('list-history').innerHTML = html || '<div style="padding:15px;text-align:center;color:#888;">暂无记录</div>';
@@ -2111,24 +2241,33 @@ HTML_TEMPLATE = r"""<!doctype html>
     };
 
     window.submitModifyOrder = function() {
-        if(!window.quantState.currentModifyTicket) return;
+        // Bug Fix #2: currentModifyTicket 为 null 时给明确提示，不静默吞命令
+        if(!window.quantState.currentModifyTicket) {
+            alert('未选中持仓，请先点击持仓行');
+            return;
+        }
         const tp = parseFloat($('modTpPrice').value) || 0;
         const sl = parseFloat($('modSlPrice').value) || 0;
         window.API.modifyPosition(window.quantState.currentModifyTicket, tp, sl)
         .then(res => {
             if(res.success) { showSuccess('buy'); $('modifyMask').style.display='none'; refreshData(); }
-            else alert(res.message);
+            else alert('修改失败: ' + (res.message || '请检查网络或重试'));
         });
     };
     
     window.closePosition = function() {
-        if(!window.quantState.currentModifyTicket) return;
-        const sym = window.quantState.currentModifySymbol || $('tradeSym').innerText;
-        const lots = window.quantState.currentModifyLots || 0;
-        window.API.submitOrder(sym, 'CLOSE', 'market', 0, 20, lots, {ticket: window.quantState.currentModifyTicket})
+        // Bug Fix #3: currentModifyTicket 为 null 时给明确提示
+        if(!window.quantState.currentModifyTicket) {
+            alert('未选中持仓，请先点击持仓行');
+            return;
+        }
+        const sym   = window.quantState.currentModifySymbol || $('tradeSym').innerText;
+        const lots  = window.quantState.currentModifyLots  || 0;
+        const ticket = window.quantState.currentModifyTicket;
+        window.API.submitOrder(sym, 'CLOSE', 'market', 0, 20, lots, {ticket: ticket})
         .then(res => {
             if(res.success) { showSuccess('close'); $('modifyMask').style.display='none'; refreshData(); }
-            else alert(res.message);
+            else alert('平仓失败: ' + (res.message || '请检查网络或重试'));
         });
     }
   </script>
@@ -2293,7 +2432,14 @@ def submit_order_v1():
     # 平仓逻辑特殊处理
     if side_raw == 'CLOSE':
         cmd["action"] = "close"
-        cmd["ticket"] = int(data.get("ticket"))
+        # Bug Fix #5: ticket 为 None 时 int() 会 TypeError -> 500
+        raw_ticket = data.get("ticket")
+        if raw_ticket is None:
+            return jsonify({"success": False, "message": "平仓指令缺少 ticket 字段"}), 400
+        try:
+            cmd["ticket"] = int(raw_ticket)
+        except (ValueError, TypeError):
+            return jsonify({"success": False, "message": f"ticket 格式无效: {raw_ticket}"}), 400
     # QUOTE 已提前处理
     elif "limit" in cmd_type_raw:
         cmd["action"] = "limit"
@@ -2341,13 +2487,21 @@ def modify_position_v1():
     # 构造 modify 命令
     now = int(time.time())
     
+    # Bug Fix #6: position_id 为 None 时 int() 会 TypeError -> 500
+    if position_id is None:
+        return jsonify({"success": False, "message": "修改指令缺少 positionId 字段"}), 400
+    try:
+        ticket_int = int(position_id)
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "message": f"positionId 格式无效: {position_id}"}), 400
+
     cmd = {
         "id": generate_unique_cmd_id(),
         "nonce": generate_nonce(),
         "created_at": now,
         "ttl_sec": 60,
         "action": "modify",
-        "ticket": int(position_id),
+        "ticket": ticket_int,
         "tp": tp,
         "sl": sl
     }
