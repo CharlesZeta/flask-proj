@@ -1062,6 +1062,32 @@ def delete_history_trade_api():
     else:
         return jsonify({"success": False, "message": "记录不存在或删除失败"}), 404
 
+# ==================== 全量行情接口 ====================
+@app.route("/api/all_quotes", methods=["GET"])
+def api_all_quotes():
+    """返回 history_report 中所有品种的最新 QUOTE_DATA，供前端行情列表刷新"""
+    result = {}
+    with history_lock:
+        for record in history_report:
+            parsed = record.get("parsed")
+            if not parsed or parsed.get("desc") != "QUOTE_DATA":
+                continue
+            symbol = parsed.get("symbol", "")
+            if not symbol or symbol in result:
+                continue  # 只保留每个品种最新一条（history_report 已按时间倒序）
+            try:
+                quote_data = json.loads(parsed.get("message", "{}"))
+                if isinstance(quote_data, dict) and "bid" in quote_data:
+                    result[symbol] = {
+                        "bid": quote_data["bid"],
+                        "ask": quote_data["ask"],
+                        "spread": parsed.get("spread"),
+                        "ts": parsed.get("ts"),
+                    }
+            except Exception:
+                continue
+    return jsonify(result)
+
 # ==================== 主页 ====================
 HTML_TEMPLATE = r"""<!doctype html>
 <html lang="zh-CN">
@@ -1285,8 +1311,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="l-btn" onclick="adjustLots(0.1)">+0.1</div>
     </div>
     <div class="trade-prices">
-      <div class="t-bid red" id="tBid">5108.93</div>
-      <div class="t-ask blue" id="tAsk">5109.04</div>
+      <div class="t-bid red" id="tBid">--</div>
+      <div class="t-ask blue" id="tAsk">--</div>
     </div>
     <div class="t-row" id="rowPrice" style="display:none;">
       <div class="t-btn" onclick="adjustInput('inpPrice', -1)">-</div>
@@ -1605,8 +1631,9 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     window.onload = () => {
       renderQuotes();
-      selectSymbol('XAUUSD', 5110.43, 'Spot Gold');
+      selectSymbol('XAUUSD', 'Spot Gold');
       setInterval(refreshData, 1500);
+      setInterval(refreshAllQuotes, 1500);
     };
 
     function renderQuotes() {
@@ -1614,28 +1641,23 @@ HTML_TEMPLATE = r"""<!doctype html>
       const displayPairs = allAvailablePairs.filter(p => savedQuotes.includes(p.name));
       
       displayPairs.forEach(p => {
-        const time = new Date().toLocaleTimeString('en-US', {hour12:false});
-        // 从后端获取的价格如果存在，可以替换这里的静态价格
-        // 这里只是初始渲染，实际价格会通过 refreshData 更新
-        const bid = p.price;
-        const ask = p.price + (p.spread * 0.01);
-        const digits = p.name === 'EURUSD' ? 4 : 2;
+        const digits = (p.name === 'EURUSD' || p.name.endsWith('USD') && p.price < 100) ? 4 : 2;
         html += `
-        <div class="q-row ${isEditMode ? 'edit-mode' : ''}" onclick="${isEditMode ? '' : `selectSymbol('${p.name}', ${p.price}, '${p.desc}')`}">
+        <div class="q-row ${isEditMode ? 'edit-mode' : ''}" onclick="${isEditMode ? '' : `selectSymbol('${p.name}', '${p.desc}')`}">
           <div class="q-delete-btn" onclick="removeQuote('${p.name}', event)">⊖</div>
           <div class="q-left">
             <div class="q-sym">${p.name}</div>
-            <div class="q-time">${time}</div>
-            <div class="q-spread">点差: ${p.spread}</div>
+            <div class="q-time" id="q_time_${p.name}">--</div>
+            <div class="q-spread" id="q_spread_${p.name}">点差: --</div>
           </div>
           <div class="q-right">
             <div class="q-prices">
-              <div class="blue" id="q_bid_${p.name}">${bid.toFixed(digits)}</div>
-              <div class="red" id="q_ask_${p.name}">${ask.toFixed(digits)}</div>
+              <div class="blue" id="q_bid_${p.name}">--</div>
+              <div class="red" id="q_ask_${p.name}">--</div>
             </div>
             <div class="q-hl">
-              <div>最低: ${p.low.toFixed(digits)}</div>
-              <div>最高: ${p.high.toFixed(digits)}</div>
+              <div>最低: <span id="q_low_${p.name}">--</span></div>
+              <div>最高: <span id="q_high_${p.name}">--</span></div>
             </div>
           </div>
         </div>`;
@@ -1717,10 +1739,13 @@ HTML_TEMPLATE = r"""<!doctype html>
       if(tabId === 'history') fetchHistoryTrades();
     };
 
-    window.selectSymbol = function(name, price, desc) {
+    window.selectSymbol = function(name, desc) {
       $('tradeSym').innerText = name;
       if (desc) $('tradeSymDesc').innerText = desc;
-      window.quantState.price = price;
+      // 价格等后端返回后再显示，先清空
+      $('tBid').innerText = '--';
+      $('tAsk').innerText = '--';
+      window.quantState.price = 0;
       
       if(quoteInterval) clearInterval(quoteInterval);
       window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {}); 
@@ -1842,6 +1867,32 @@ HTML_TEMPLATE = r"""<!doctype html>
       },
       cancelCommand: async function(id) { alert("暂不支持前端撤单"); }
     };
+
+    // ======= 行情列表全量刷新（每1.5s） =======
+    async function refreshAllQuotes() {
+      try {
+        const res = await fetch('/api/all_quotes');
+        if (!res.ok) return;
+        const quotes = await res.json();   // { "XAUUSD": {bid, ask, spread, ts}, ... }
+
+        for (const [sym, q] of Object.entries(quotes)) {
+          const bidEl    = $('q_bid_'    + sym);
+          const askEl    = $('q_ask_'    + sym);
+          const spreadEl = $('q_spread_' + sym);
+          const timeEl   = $('q_time_'   + sym);
+
+          if (!bidEl) continue;   // 该品种不在当前行情列表中
+
+          // 判断小数位数
+          const digits = (q.bid < 10) ? 4 : 2;
+
+          bidEl.innerText    = q.bid != null ? q.bid.toFixed(digits) : '--';
+          askEl.innerText    = q.ask != null ? q.ask.toFixed(digits) : '--';
+          if (spreadEl) spreadEl.innerText = q.spread != null ? '点差: ' + q.spread : '点差: --';
+          if (timeEl)   timeEl.innerText   = q.ts ? new Date(q.ts * 1000).toLocaleTimeString('en-US', {hour12:false}) : '--';
+        }
+      } catch(e) { /* 静默失败，不影响其他功能 */ }
+    }
 
     // ======= 成功反馈动画 =======
     let _successTimer = null;
