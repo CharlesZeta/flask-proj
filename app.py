@@ -73,9 +73,193 @@ PRODUCT_SPECS = {
     "DSHUSD": {"size": 1000, "lev": 500, "currency": "USD", "type": "crypto"},
 }
 
+# 外汇品种补充到 PRODUCT_SPECS（保持与新程序一致）
+PRODUCT_SPECS.update({
+    "USDCHF":{"size":100000,"lev":500,"currency":"CHF","type":"forex"},
+    "GBPUSD":{"size":100000,"lev":500,"currency":"USD","type":"forex"},
+    "EURUSD":{"size":100000,"lev":500,"currency":"USD","type":"forex"},
+    "USDJPY":{"size":100000,"lev":500,"currency":"JPY","type":"forex"},
+    "USDCAD":{"size":100000,"lev":500,"currency":"CAD","type":"forex"},
+    "AUDUSD":{"size":100000,"lev":500,"currency":"USD","type":"forex"},
+    "EURGBP":{"size":100000,"lev":500,"currency":"GBP","type":"forex"},
+    "EURAUD":{"size":100000,"lev":500,"currency":"AUD","type":"forex"},
+    "EURCHF":{"size":100000,"lev":500,"currency":"CHF","type":"forex"},
+    "EURJPY":{"size":100000,"lev":500,"currency":"JPY","type":"forex"},
+    "GBPCHF":{"size":100000,"lev":500,"currency":"CHF","type":"forex"},
+    "CADJPY":{"size":100000,"lev":500,"currency":"JPY","type":"forex"},
+    "GBPJPY":{"size":100000,"lev":500,"currency":"JPY","type":"forex"},
+    "AUDNZD":{"size":100000,"lev":500,"currency":"NZD","type":"forex"},
+    "AUDCAD":{"size":100000,"lev":500,"currency":"CAD","type":"forex"},
+    "AUDCHF":{"size":100000,"lev":500,"currency":"CHF","type":"forex"},
+    "AUDJPY":{"size":100000,"lev":500,"currency":"JPY","type":"forex"},
+    "CHFJPY":{"size":100000,"lev":500,"currency":"JPY","type":"forex"},
+    "EURNZD":{"size":100000,"lev":500,"currency":"NZD","type":"forex"},
+    "EURCAD":{"size":100000,"lev":500,"currency":"CAD","type":"forex"},
+    "CADCHF":{"size":100000,"lev":500,"currency":"CHF","type":"forex"},
+    "NZDJPY":{"size":100000,"lev":500,"currency":"JPY","type":"forex"},
+    "NZDUSD":{"size":100000,"lev":500,"currency":"USD","type":"forex"},
+    "GBPAUD":{"size":100000,"lev":500,"currency":"AUD","type":"forex"},
+    "GBPCAD":{"size":100000,"lev":500,"currency":"CAD","type":"forex"},
+    "GBPNZD":{"size":100000,"lev":500,"currency":"NZD","type":"forex"},
+    "NZDCAD":{"size":100000,"lev":500,"currency":"CAD","type":"forex"},
+    "NZDCHF":{"size":100000,"lev":500,"currency":"CHF","type":"forex"},
+    "USDSGD":{"size":100000,"lev":500,"currency":"SGD","type":"forex"},
+    "USDHKD":{"size":100000,"lev":500,"currency":"HKD","type":"forex"},
+    "USDCNH":{"size":100000,"lev":500,"currency":"CNH","type":"forex"},
+    "LNKUSD":{"size":1000,"lev":500,"currency":"USD","type":"crypto"},
+    "AAPL":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "AMZN":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "BABA":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "GOOGL":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "META":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "MSFT":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "NFLX":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "NVDA":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "TSLA":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "ABBV":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "ABNB":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "ABT":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "ADBE":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "AMD":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "AVGO":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "C":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "CRM":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "DIS":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "GS":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "INTC":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "JNJ":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "MA":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "MCD":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "KO":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "MMM":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "NIO":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "PLTR":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "SHOP":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "TSM":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+    "V":{"size":100,"lev":10,"currency":"USD","type":"stock"},
+})
+
 # 默认规则
 DEFAULT_FOREX_SPEC = {"size": 100000, "lev": 500, "type": "forex"}
 DEFAULT_STOCK_SPEC = {"size": 100, "lev": 10, "currency": "USD", "type": "stock"}
+
+# ==================== 品种名归一化（核心修复）====================
+# 经纪商常给品种加后缀：EURUSDm, XAUUSD.a, NASUSDc, U30USD.r 等
+# 归一化后才能在 cache 和 history 中正确匹配
+KNOWN_SYMBOLS = set(PRODUCT_SPECS.keys())
+
+def normalize_symbol(raw_symbol: str) -> str:
+    if not raw_symbol:
+        return ""
+    s = raw_symbol.strip().upper()
+    if s in KNOWN_SYMBOLS:
+        return s
+    # 去掉末尾 1-4 字符尝试匹配（处理 m/c/r/.a 等后缀）
+    for trim in range(1, 5):
+        candidate = s[:-trim] if len(s) > trim else ""
+        if candidate and candidate in KNOWN_SYMBOLS:
+            return candidate
+    if '.' in s:
+        candidate = s.split('.')[0]
+        if candidate in KNOWN_SYMBOLS:
+            return candidate
+    if '_' in s:
+        candidate = s.split('_')[0]
+        if candidate in KNOWN_SYMBOLS:
+            return candidate
+    return s  # 未能归一化则原样返回（大写）
+
+# ==================== 报价缓存（O(1) 查询）====================
+latest_quote_cache = {}
+quote_cache_lock   = threading.Lock()
+
+def _to_float(v):
+    if v is None: return None
+    try:    return float(v)
+    except: return None
+
+def _bid_ask_from_dict(d):
+    """兼容 bid/Bid/BID 等不同大小写"""
+    if not isinstance(d, dict): return None, None
+    for bk, ak in (("bid","ask"),("Bid","Ask"),("BID","ASK")):
+        b, a = _to_float(d.get(bk)), _to_float(d.get(ak))
+        if b is not None and a is not None:
+            return b, a
+    return None, None
+
+def _message_to_quote_dict(p):
+    """message 字段可能是 JSON 字符串或已是 dict"""
+    m = p.get("message")
+    if m is None: return None
+    if isinstance(m, dict): return m
+    if isinstance(m, str) and m.strip():
+        try:
+            o = json.loads(m)
+            return o if isinstance(o, dict) else None
+        except: return None
+    return None
+
+def cache_tick_quote(raw_symbol, bid, ask, spread=None, ts=None):
+    """写入归一化品种的报价缓存"""
+    norm = normalize_symbol(raw_symbol or "")
+    if not norm: return
+    b, a = _to_float(bid), _to_float(ask)
+    if b is None or a is None: return
+    with quote_cache_lock:
+        latest_quote_cache[norm] = {
+            "bid": b, "ask": a, "symbol": norm,
+            "spread": spread, "ts": ts,
+            "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+def ingest_quote_from_parsed(p):
+    """从 MT4 任意 report 解析对象中尽量提取 bid/ask 写入缓存"""
+    if not isinstance(p, dict): return
+    rs = p.get("symbol") or p.get("Symbol") or ""
+    b, a = _bid_ask_from_dict(p)
+    qd = None
+    if b is None or a is None:
+        qd = _message_to_quote_dict(p)
+        if qd: b, a = _bid_ask_from_dict(qd)
+    if b is None or a is None: return
+    sp = p.get("spread")
+    if sp is None and qd: sp = qd.get("spread")
+    ts = p.get("ts") or p.get("time") or p.get("Time")
+    cache_tick_quote(rs, b, a, spread=sp, ts=ts)
+
+# ==================== K线数据结构 ====================
+KLINE_MAX  = {"5min": 300, "10min": 250, "1hour": 200}
+kline_data  = {}
+kline_locks = {}
+
+def _get_kline_lock(symbol):
+    if symbol not in kline_locks:
+        kline_locks[symbol] = threading.Lock()
+    return kline_locks[symbol]
+
+def _floor_ts(ts_ms, tf):
+    step = {"5min": 5*60*1000, "10min": 10*60*1000, "1hour": 60*60*1000}.get(tf, 60*1000)
+    return (ts_ms // step) * step
+
+def update_kline(raw_symbol, bid, ask, tick_ts_ms):
+    """更新内存 K 线，bar 格式: [ts, open, high, low, close]"""
+    mid  = (float(bid) + float(ask)) / 2.0
+    norm = normalize_symbol(raw_symbol)
+    with _get_kline_lock(norm):
+        if norm not in kline_data:
+            kline_data[norm] = {tf: [] for tf in KLINE_MAX}
+        for tf in KLINE_MAX:
+            bar_ts = _floor_ts(tick_ts_ms, tf)
+            bars   = kline_data[norm][tf]
+            if bars and bars[-1][0] == bar_ts:
+                bar    = bars[-1]
+                bar[2] = max(bar[2], mid)   # high
+                bar[3] = min(bar[3], mid)   # low
+                bar[4] = mid                # close
+            else:
+                bars.append([bar_ts, mid, mid, mid, mid])
+                if len(bars) > KLINE_MAX[tf]:
+                    bars[:] = bars[-KLINE_MAX[tf]:]
 
 # ==================== 命令过期清理 ====================
 def cleanup_expired_commands():
@@ -244,6 +428,10 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
         "exposure_notional": parsed_json.get("exposure_notional") if isinstance(parsed_json, dict) else None,
         "positions": parsed_json.get("positions") if isinstance(parsed_json, dict) else None,
     }
+
+    # 只要是 report / quote 类消息，都尝试解析 bid/ask 写入快速缓存
+    if isinstance(parsed_json, dict) and category in ("report", "other"):
+        ingest_quote_from_parsed(parsed_json)
 
     with history_lock:
         if category == "status":
@@ -991,66 +1179,73 @@ def api_status():
 # 网页端获取最新 MT4 状态数据（用于风控计算）
 @app.route("/api/latest_status", methods=["GET"])
 def api_latest_status():
-    symbol_filter = request.args.get("symbol", "").upper()
-    print(f"[LATEST_STATUS] enter symbol={symbol_filter}")
-    
-    # 1. 在锁内提取所有需要的数据，避免锁竞争和死锁风险
-    detail = None
-    latest_quote = None
+    symbol_filter = request.args.get("symbol", "").upper().strip()
+    norm_filter   = normalize_symbol(symbol_filter) if symbol_filter else ""
+
+    detail        = None
+    latest_quote  = None
     current_price = 0
-    
+
+    # ---- 优先从 O(1) 报价缓存取 ----
+    if norm_filter:
+        with quote_cache_lock:
+            cq = latest_quote_cache.get(norm_filter)
+        if cq:
+            latest_quote  = dict(cq)
+            current_price = _to_float(cq.get("bid")) or 0
+
     with history_lock:
-        latest_status_record = history_status[0] if history_status else None
+        latest_status_record    = history_status[0]    if history_status    else None
         latest_positions_record = history_positions[0] if history_positions else None
-        
-        # 查找最新的 QUOTE_DATA 报告
-        for record in history_report:
-            parsed = record.get("parsed")
-            if parsed and parsed.get("desc") == "QUOTE_DATA":
-                record_symbol = parsed.get("symbol", "")
-                
-                if symbol_filter and record_symbol and record_symbol != symbol_filter:
-                    continue 
-                
-                try:
-                    msg = parsed.get("message", "{}")
-                    quote_data = json.loads(msg)
-                    if isinstance(quote_data, dict) and "bid" in quote_data:
-                        latest_quote = {
-                            "bid": quote_data.get("bid"),
-                            "ask": quote_data.get("ask"),
-                            "spread": parsed.get("spread"),
-                            "ts": parsed.get("ts"),
-                            "symbol": record_symbol
-                        }
-                        # 记录当前价格供后续计算
-                        current_price = latest_quote["bid"]
-                        print(f"[LATEST_STATUS] quote found symbol={record_symbol} bid={latest_quote['bid']}")
-                        break 
-                except:
-                    continue
+
+        # 缓存未命中：扫描 history_report（兼容经纪商后缀）
+        if not latest_quote:
+            for record in history_report:
+                parsed = record.get("parsed")
+                if not isinstance(parsed, dict): continue
+                if parsed.get("desc") == "QUOTE_DATA":
+                    rs = parsed.get("symbol", "")
+                    if norm_filter and normalize_symbol(rs) != norm_filter:
+                        continue
+                    qd = _message_to_quote_dict(parsed)
+                    if not qd:
+                        try:    qd = json.loads(parsed.get("message") or "{}")
+                        except: qd = None
+                    if isinstance(qd, dict):
+                        b, a = _bid_ask_from_dict(qd)
+                        if b is not None and a is not None:
+                            latest_quote  = {"bid": b, "ask": a,
+                                "symbol": normalize_symbol(rs) or rs,
+                                "spread": parsed.get("spread"), "ts": parsed.get("ts")}
+                            current_price = b
+                            break
+
+        # 再次兜底：直接从 report 顶层取 bid/ask
+        if not latest_quote:
+            for record in history_report:
+                parsed = record.get("parsed")
+                if not isinstance(parsed, dict): continue
+                rs = parsed.get("symbol", "")
+                if norm_filter and normalize_symbol(rs) != norm_filter: continue
+                b, a = _bid_ask_from_dict(parsed)
+                if b is not None and a is not None:
+                    latest_quote  = {"bid": b, "ask": a,
+                        "symbol": normalize_symbol(rs) or rs,
+                        "spread": parsed.get("spread"), "ts": parsed.get("ts")}
+                    current_price = b
+                    break
 
         positions_data = None
         if latest_positions_record:
             positions_data = latest_positions_record.get("parsed", {}).get("positions", [])
-        
-        # 提取详情
         detail = extract_latest_details_from_status(latest_status_record, positions_data)
-        
-    # 2. 锁已释放，执行计算逻辑
+
     if detail:
         if latest_quote:
             detail["latest_quote"] = latest_quote
-        
-        # 注入产品规则和计算信息
-        if symbol_filter and current_price > 0:
-            # calc_lot_info 内部会调用 get_rate_to_usd -> get_latest_price，后者会再次获取 history_lock
-            # 由于已释放外层锁，这里是安全的
-            lot_info = calc_lot_info(symbol_filter, current_price, 1.0)
+        if norm_filter and current_price > 0:
+            lot_info = calc_lot_info(norm_filter, current_price, 1.0)
             detail["symbol_rules"] = lot_info
-            print(f"[LATEST_STATUS] symbol_rules loaded symbol={symbol_filter} margin_per_lot={lot_info.get('margin_per_lot_usd')}")
-        
-        print(f"[LATEST_STATUS] response ok symbol={symbol_filter}")
         return jsonify(detail)
     else:
         return jsonify({})
@@ -1090,28 +1285,22 @@ def delete_history_trade_api():
 # ==================== 全量行情接口 ====================
 @app.route("/api/all_quotes", methods=["GET"])
 def api_all_quotes():
-    """返回 history_report 中所有品种的最新 QUOTE_DATA，供前端行情列表刷新"""
-    result = {}
-    with history_lock:
-        for record in history_report:
-            parsed = record.get("parsed")
-            if not parsed or parsed.get("desc") != "QUOTE_DATA":
-                continue
-            symbol = parsed.get("symbol", "")
-            if not symbol or symbol in result:
-                continue  # 只保留每个品种最新一条（history_report 已按时间倒序）
-            try:
-                quote_data = json.loads(parsed.get("message", "{}"))
-                if isinstance(quote_data, dict) and "bid" in quote_data:
-                    result[symbol] = {
-                        "bid": quote_data["bid"],
-                        "ask": quote_data["ask"],
-                        "spread": parsed.get("spread"),
-                        "ts": parsed.get("ts"),
-                    }
-            except Exception:
-                continue
+    """直接从 quote_cache 返回所有品种最新行情（O(1)，且已归一化品种名）"""
+    with quote_cache_lock:
+        result = {sym: dict(q) for sym, q in latest_quote_cache.items()}
     return jsonify(result)
+
+@app.route("/api/kline", methods=["GET"])
+def api_kline():
+    """返回指定品种的 K 线数据"""
+    symbol = request.args.get("symbol", "XAUUSD").upper().strip()
+    norm   = normalize_symbol(symbol)
+    tf     = request.args.get("tf", "5min")
+    if tf not in KLINE_MAX: tf = "5min"
+    limit  = min(request.args.get("limit", KLINE_MAX[tf], type=int), KLINE_MAX[tf])
+    with _get_kline_lock(norm):
+        bars = list(kline_data.get(norm, {}).get(tf, []))
+    return jsonify({"symbol": norm, "tf": tf, "bars": bars[-limit:]})
 
 # ==================== 主页 ====================
 HTML_TEMPLATE = r"""<!doctype html>
@@ -1279,6 +1468,24 @@ HTML_TEMPLATE = r"""<!doctype html>
     .sym-add-btn.added { color: var(--muted); cursor: default; }
 
 
+
+    /* K线图区域 */
+    .kline-section { margin: 0 0 0 0; border-top: 1px solid var(--line); }
+    .kline-header { display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 15px; background: #f8f8f8; border-bottom: 1px solid var(--line); }
+    .kline-title { font-size: 13px; font-weight: bold; color: var(--muted); }
+    .kline-ohlc  { font-size: 11px; color: var(--muted); font-family: "SF Mono", Menlo, monospace; }
+    .kline-tfs   { display: flex; gap: 6px; }
+    .kline-tf    { padding: 2px 10px; border-radius: 4px; border: 1px solid var(--line);
+      background: transparent; color: var(--muted); font-weight: 600; font-size: 12px;
+      cursor: pointer; transition: .15s; }
+    .kline-tf:hover { color: var(--blue); border-color: var(--blue); }
+    .kline-tf.on    { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .kline-wrap  { position: relative; height: 260px; cursor: crosshair;
+      background: #fff; }
+    #klineCanvas, #klineCursor { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #klineCursor { pointer-events: none; }
+
     /* ======= 成功反馈动画 ======= */
     .success-overlay {
       position: fixed; inset: 0; z-index: 9999;
@@ -1410,7 +1617,24 @@ HTML_TEMPLATE = r"""<!doctype html>
     <div class="trade-actions" id="actionPending" style="display:none;">
       <button class="btn-place" onclick="initiateOrder('PENDING')">下单</button>
     </div>
+
+  <!-- K线区域（嵌入交易Tab底部）-->
+  <div class="kline-section" id="klineSection">
+    <div class="kline-header">
+      <span class="kline-title" id="klineSymLabel">K线</span>
+      <span class="kline-ohlc" id="klineOHLC"></span>
+      <div class="kline-tfs">
+        <button class="kline-tf on" data-tf="5min"  onclick="kSetTF(this)">5m</button>
+        <button class="kline-tf"    data-tf="10min" onclick="kSetTF(this)">10m</button>
+        <button class="kline-tf"    data-tf="1hour" onclick="kSetTF(this)">1H</button>
+      </div>
+    </div>
+    <div class="kline-wrap" id="klineWrap">
+      <canvas id="klineCanvas"></canvas>
+      <canvas id="klineCursor"></canvas>
+    </div>
   </div>
+</div>
 
   <!-- Positions Tab -->
   <div class="tab-content" id="tab-positions">
@@ -1571,13 +1795,23 @@ HTML_TEMPLATE = r"""<!doctype html>
       return parseFloat(n).toFixed(d);
     }
 
-    // 根据价格自动计算合适小数位数 —— 统一用这一个函数
-    // < 0.1    → 5位  (小加密如 DOGUSD 0.093)
-    // < 10     → 5位  (外汇如 USDCHF 0.8840, EURUSD 1.1561)
-    // < 100    → 3位  (部分交叉盘如 GBPJPY 210.35)
-    // < 1000   → 2位  (指数/白银如 SPXUSD 6803, XAGUSD 30)
-    // >= 1000  → 2位  (黄金/大指数如 XAUUSD 3300, U30USD 47836)
-    function calcDigits(price) {
+    // 按品种名精确计算小数位数（与参考程序 dg() 对齐）
+    function calcDigits(price, sym) {
+      // 如果传了品种名，优先按品种规则
+      if (sym) {
+        const u = sym.toUpperCase();
+        if (["XAUUSD","XAGUSD","UKOUSD","USOUSD"].includes(u))  return 2;
+        if (["BTCUSD","ETHUSD"].includes(u))                     return 2;
+        if (u.endsWith("JPY"))                                    return 3;
+        if (["DOGUSD","ADAUSD","RPLUSD","XSIUSD","LNKUSD"].includes(u)) return 5;
+        if (["LTCUSD","SOLUSD","BCHUSD","XMRUSD","BNBUSD","AVEUSD","DSHUSD"].includes(u)) return 2;
+        if (["U30USD","NASUSD","SPXUSD","100GBP","D30EUR","E50EUR","H33HKD"].includes(u)) return 1;
+        // 外汇判断：包含主要货币后缀且不是上面特殊品种
+        const fx = ["USD","GBP","EUR","JPY","CHF","AUD","NZD","CAD","HKD","SGD","CNH"];
+        if (fx.some(c => u.includes(c) && !["BTCUSD","ETHUSD"].includes(u))) return 5;
+        return 2;  // 股票等其他
+      }
+      // 无品种名时按价格数值兜底
       const p = parseFloat(price);
       if (isNaN(p) || p <= 0) return 4;
       if (p < 10)   return 5;
@@ -1980,7 +2214,7 @@ HTML_TEMPLATE = r"""<!doctype html>
           // parseFloat 保证类型正确（EA 可能以字符串形式上报价格）
           const bid = parseFloat(q.bid);
           const ask = parseFloat(q.ask);
-          const digits = calcDigits(bid);
+          const digits = calcDigits(bid, sym);
 
           bidEl.innerText = isNaN(bid) ? '--' : bid.toFixed(digits);
           askEl.innerText = isNaN(ask) ? '--' : ask.toFixed(digits);
@@ -2062,7 +2296,7 @@ HTML_TEMPLATE = r"""<!doctype html>
                 if(data.latest_quote) {
                     const bid = parseFloat(data.latest_quote.bid);
                     const ask = parseFloat(data.latest_quote.ask);
-                    const dg  = calcDigits(bid);
+                    const dg  = calcDigits(bid, sym);
                     window.quantState.price = bid;
                     $('tBid').innerText = isNaN(bid) ? '--' : bid.toFixed(dg);
                     $('tAsk').innerText = isNaN(ask) ? '--' : ask.toFixed(dg);
@@ -2270,6 +2504,215 @@ HTML_TEMPLATE = r"""<!doctype html>
             else alert('平仓失败: ' + (res.message || '请检查网络或重试'));
         });
     }
+
+    // ======================== K线绘制引擎 ========================
+    let _kBars = [], _kTF = '5min', _kSym = 'XAUUSD', _kL = null;
+
+    function kSetTF(btn) {
+      document.querySelectorAll('.kline-tf').forEach(b => b.classList.remove('on'));
+      btn.classList.add('on');
+      _kTF = btn.dataset.tf;
+      kFetch();
+    }
+
+    async function kFetch() {
+      const sym = $('tradeSym') ? $('tradeSym').innerText : _kSym;
+      _kSym = sym;
+      if ($('klineSymLabel')) $('klineSymLabel').innerText = sym + ' K线';
+      try {
+        const r = await fetch('/api/kline?symbol=' + encodeURIComponent(sym) + '&tf=' + encodeURIComponent(_kTF));
+        const d = await r.json();
+        if (d.bars && d.bars.length > 0) { _kBars = d.bars; kDraw(_kBars); }
+        else { _kBars = []; kDrawEmpty(); }
+      } catch(e) { kDrawEmpty(); }
+    }
+
+    function kNiceScale(lo, hi, maxTicks) {
+      if (lo === hi) { const d = Math.abs(lo) * 0.01 || 1; lo -= d; hi += d; }
+      const range = hi - lo, pad = range * 0.08;
+      let mn = lo - pad, mx = hi + pad;
+      const rs = (mx - mn) / (maxTicks - 1);
+      const mg = Math.pow(10, Math.floor(Math.log10(rs)));
+      const res = rs / mg;
+      let ns;
+      if (res <= 1) ns = mg; else if (res <= 2) ns = 2*mg;
+      else if (res <= 2.5) ns = 2.5*mg; else if (res <= 5) ns = 5*mg; else ns = 10*mg;
+      const tI = Math.floor(mn / ns) * ns, tA = Math.ceil(mx / ns) * ns, tks = [];
+      for (let v = tI; v <= tA + ns * 0.5; v += ns) tks.push(v);
+      return { tI, tA, ns, tks };
+    }
+
+    function kDraw(bars) {
+      const cv = $('klineCanvas'); if (!cv) return;
+      const ctx = cv.getContext('2d');
+      const dpr = devicePixelRatio || 1;
+      const w = cv.offsetWidth, h = cv.offsetHeight;
+      if (w <= 0 || h <= 0) return;
+      cv.width = w * dpr; cv.height = h * dpr;
+      ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+      if (!bars || !bars.length) { kDrawEmpty(); return; }
+
+      const PL = 8, PR = 68, PT = 14, PB = 22;
+      const cW = w - PL - PR, cH = h - PT - PB;
+      if (cW <= 0 || cH <= 0) return;
+
+      const vn = Math.max(5, Math.min(bars.length, Math.floor(cW / 6), 80));
+      const vb = bars.slice(-vn), n = vb.length;
+      let dMin = Infinity, dMax = -Infinity;
+      for (const b of vb) { if (b[2] > dMax) dMax = b[2]; if (b[3] < dMin) dMin = b[3]; }
+
+      const D = calcDigits(null, _kSym);
+      const sc = kNiceScale(dMin, dMax, 6);
+      const { tI, tA, tks } = sc;
+      const yR = tA - tI || 1;
+      const p2y = p => PT + cH * (1 - (p - tI) / yR);
+      const y2p = y => tI + (1 - (y - PT) / cH) * yR;
+      const bT = cW / n, gap = Math.max(1, Math.round(bT * 0.2));
+      const bW = Math.max(1, Math.floor(bT - gap)), hB = bW / 2;
+      const bx = i => PL + (i + 0.5) * bT;
+
+      _kL = { PL, PR, PT, PB, cW, cH, n, bT, tI, tA, yR, p2y, y2p, bx, D, vb };
+
+      const G = '#34c759', R = '#ff3b30', gridC = 'rgba(0,0,0,0.05)', axC = '#8e8e93';
+
+      // Y轴网格
+      ctx.font = '10px "SF Mono",Menlo,monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      for (const t of tks) {
+        const y = p2y(t);
+        if (y < PT - 2 || y > PT + cH + 2) continue;
+        ctx.strokeStyle = gridC; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(PL, Math.round(y) + 0.5); ctx.lineTo(PL + cW, Math.round(y) + 0.5); ctx.stroke();
+        ctx.fillStyle = axC; ctx.fillText(t.toFixed(D), PL + cW + 6, y);
+      }
+
+      // 烛台
+      for (let i = 0; i < n; i++) {
+        const b = vb[i], o = b[1], hi = b[2], lo = b[3], cl = b[4];
+        const up = cl >= o, col = up ? G : R, x = bx(i);
+        ctx.strokeStyle = col; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x) + 0.5, Math.round(p2y(hi)));
+        ctx.lineTo(Math.round(x) + 0.5, Math.round(p2y(lo)));
+        ctx.stroke();
+        const yO = p2y(o), yC = p2y(cl);
+        const bt = Math.min(yO, yC), bb = Math.max(yO, yC);
+        ctx.fillStyle = col;
+        ctx.fillRect(Math.round(x - hB), Math.round(bt), bW, Math.max(1, bb - bt));
+      }
+
+      // 最新价虚线
+      if (n > 0) {
+        const lc = vb[n-1][4], up = lc >= vb[n-1][1], col = up ? G : R;
+        const yL = p2y(lc);
+        ctx.setLineDash([4, 3]); ctx.strokeStyle = col; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(PL, Math.round(yL) + 0.5); ctx.lineTo(PL + cW, Math.round(yL) + 0.5); ctx.stroke();
+        ctx.setLineDash([]);
+        const tW = PR - 4, tHt = 16, tX = PL + cW + 2, tY = Math.round(yL) - tHt / 2;
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.roundRect(tX, tY, tW, tHt, 3); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 10px "SF Mono",Menlo,monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(lc.toFixed(D), tX + tW / 2, Math.round(yL));
+      }
+
+      // X轴时间标签
+      ctx.fillStyle = axC; ctx.font = '10px "SF Mono",Menlo,monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      const iMs = _kTF === '1hour' ? 4*3600000 : 3600000;
+      let lX = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const ts = vb[i][0], x = bx(i);
+        if (x - lX < 55) continue;
+        const d = new Date(ts + 8 * 3600000);
+        const lb = _kTF === '1hour'
+          ? (d.getUTCMonth()+1)+'/'+d.getUTCDate()+' '+String(d.getUTCHours()).padStart(2,'0')+':00'
+          : String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0');
+        ctx.fillStyle = axC; ctx.fillText(lb, x, PT + cH + 5); lX = x;
+      }
+
+      kClearCursor();
+    }
+
+    function kDrawEmpty() {
+      const cv = $('klineCanvas'); if (!cv) return;
+      const ctx = cv.getContext('2d'), dpr = devicePixelRatio || 1;
+      const w = cv.offsetWidth, h = cv.offsetHeight;
+      cv.width = w * dpr; cv.height = h * dpr; ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#8e8e93'; ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('暂无 K 线数据（等待 Tick 推送）', w / 2, h / 2);
+      kClearCursor(); _kL = null;
+    }
+
+    function kClearCursor() {
+      const cv = $('klineCursor'); if (!cv) return;
+      const dpr = devicePixelRatio || 1;
+      cv.width = cv.offsetWidth * dpr; cv.height = cv.offsetHeight * dpr;
+      cv.getContext('2d').scale(dpr, dpr);
+      if ($('klineOHLC')) $('klineOHLC').innerText = '';
+    }
+
+    function kDrawCursor(mx, my) {
+      const cv = $('klineCursor'); if (!cv || !_kL) return;
+      const dpr = devicePixelRatio || 1;
+      const w = cv.offsetWidth, h = cv.offsetHeight;
+      cv.width = w * dpr; cv.height = h * dpr;
+      const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+      const { PL, PT, cW, cH, n, bT, D, vb, p2y, y2p, bx } = _kL;
+      const cx = Math.max(PL, Math.min(mx, PL + cW));
+      const cy = Math.max(PT, Math.min(my, PT + cH));
+      const idx = Math.max(0, Math.min(Math.round((cx - PL) / bT - 0.5), n - 1));
+      const sx = bx(idx);
+      ctx.setLineDash([3, 3]); ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(Math.round(sx) + 0.5, PT); ctx.lineTo(Math.round(sx) + 0.5, PT + cH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(PL, Math.round(cy) + 0.5); ctx.lineTo(PL + cW, Math.round(cy) + 0.5); ctx.stroke();
+      ctx.setLineDash([]);
+      const pr = y2p(cy);
+      const tW2 = 60, tH2 = 16, tX2 = PL + cW + 2, tY2 = Math.round(cy) - tH2 / 2;
+      ctx.fillStyle = '#333';
+      ctx.beginPath(); ctx.roundRect(tX2, tY2, tW2, tH2, 3); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '10px "SF Mono",Menlo,monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(pr.toFixed(D), tX2 + tW2 / 2, Math.round(cy));
+      if (idx >= 0 && idx < n && $('klineOHLC')) {
+        const b = vb[idx], up = b[4] >= b[1], col = up ? '#34c759' : '#ff3b30';
+        $('klineOHLC').innerHTML =
+          `<span style="color:${col}">O:${b[1].toFixed(D)} H:${b[2].toFixed(D)} L:${b[3].toFixed(D)} C:${b[4].toFixed(D)}</span>`;
+      }
+    }
+
+    // 绑定十字光标事件
+    (function() {
+      const wr = $('klineWrap'); if (!wr) return;
+      const pos = e => {
+        const r = wr.getBoundingClientRect();
+        return e.touches
+          ? { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top }
+          : { x: e.clientX - r.left, y: e.clientY - r.top };
+      };
+      wr.addEventListener('mousemove', e => { const p = pos(e); kDrawCursor(p.x, p.y); });
+      wr.addEventListener('mouseleave', kClearCursor);
+      wr.addEventListener('touchmove', e => { e.preventDefault(); const p = pos(e); kDrawCursor(p.x, p.y); }, { passive: false });
+      wr.addEventListener('touchend', kClearCursor);
+    })();
+
+    // 切换品种时同步刷新 K 线
+    const _origSelectSymbol = window.selectSymbol;
+    window.selectSymbol = function(name, desc) {
+      _origSelectSymbol(name, desc);
+      kFetch();
+    };
+
+    // resize 重绘
+    window.addEventListener('resize', () => {
+      clearTimeout(window._krt);
+      window._krt = setTimeout(() => { if (_kBars.length) kDraw(_kBars); else kDrawEmpty(); }, 100);
+    });
+
+    // 定时刷新 K 线（与 refreshData 同频）
+    setInterval(kFetch, 1500);
+
   </script>
 </body>
 </html>"""
@@ -2718,39 +3161,40 @@ def receive_tick():
         # 以便前端通过 /api/latest_status 轮询到
         
         for tick in ticks:
-            symbol = tick.get('symbol')
-            bid = tick.get('bid')
-            ask = tick.get('ask')
+            symbol   = tick.get('symbol')
+            bid      = tick.get('bid')
+            ask      = tick.get('ask')
             tick_time = tick.get('tick_time')
-            
-            if not symbol or not bid or not ask: continue
-            
-            # 构造一个伪造的 QUOTE_DATA 报告存入 history_report
-            # 这样前端 refreshData -> /api/latest_status -> latest_quote 逻辑就能复用
-            
-            quote_msg = json.dumps({
-                "bid": bid,
-                "ask": ask
-            })
-            
+
+            if not symbol or bid is None or ask is None: continue
+            bf, af = _to_float(bid), _to_float(ask)
+            if bf is None or af is None: continue
+
+            # 计算 ts_ms
+            if tick_time is not None:
+                tft   = float(tick_time)
+                ts_ms = int(tft) if tft > 1e12 else int(tft * 1000)
+            else:
+                ts_ms = int(time.time() * 1000)
+
+            # 1) 写入报价缓存（支持归一化品种名）
+            cache_tick_quote(symbol, bf, af, spread=tick.get('spread'), ts=tick_time)
+
+            # 2) 更新 K 线
+            update_kline(symbol, bf, af, ts_ms)
+
+            # 3) 保留兼容用的 history_report 记录
+            quote_msg = json.dumps({"bid": bf, "ask": af})
             record = {
                 "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "ip": get_client_ip(),
-                "method": "POST",
-                "path": "/api/tick",
-                "category": "report", # 伪装成 report
-                "headers": {},
-                "body_raw": json.dumps(tick),
+                "ip": get_client_ip(), "method": "POST", "path": "/api/tick",
+                "category": "report", "headers": {}, "body_raw": json.dumps(tick),
                 "parsed": {
-                    "desc": "QUOTE_DATA",
-                    "spread": tick.get('spread', 0), 
-                    "ts": tick_time, 
-                    "message": quote_msg,
-                    "symbol": symbol, # 显式存储 symbol
-                    "account": "tick_stream" 
+                    "desc": "QUOTE_DATA", "spread": tick.get('spread', 0),
+                    "ts": tick_time, "message": quote_msg,
+                    "symbol": symbol, "account": "tick_stream",
                 }
             }
-            
             with history_lock:
                 history_report.appendleft(record)
 
