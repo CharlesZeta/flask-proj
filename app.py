@@ -1651,22 +1651,24 @@ HTML_TEMPLATE = r"""<!doctype html>
     
     let isEditMode = false;
 
+    // 东八区实时时钟 -- 独立 IIFE，不受其他 JS 错误影响
+    (function() {
+      function tickClock() {
+        var el = document.getElementById('liveClock');
+        if (!el) return;
+        var now = new Date(Date.now() + 8 * 3600 * 1000);
+        el.innerText = [now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds()]
+          .map(function(n){ return String(n).padStart(2,'0'); }).join(':');
+      }
+      tickClock();
+      setInterval(tickClock, 1000);
+    })();
+
     window.onload = () => {
       renderQuotes();
       selectSymbol('XAUUSD', 'Spot Gold');
       setInterval(refreshData, 1500);
       setInterval(refreshAllQuotes, 1500);
-
-      // 东八区实时时钟，每秒更新
-      function tickClock() {
-        const now = new Date(Date.now() + 8 * 3600 * 1000);
-        const hh = String(now.getUTCHours()).padStart(2, '0');
-        const mm = String(now.getUTCMinutes()).padStart(2, '0');
-        const ss = String(now.getUTCSeconds()).padStart(2, '0');
-        $('liveClock').innerText = `${hh}:${mm}:${ss}`;
-      }
-      tickClock();
-      setInterval(tickClock, 1000);
     };
 
     function renderQuotes() {
@@ -1767,7 +1769,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
       $('tab-' + tabId).classList.add('active');
       el.classList.add('active');
-      $('topBar').innerText = title;
+      $('topBarTitle').innerText = title;
       
       if(tabId === 'history') fetchHistoryTrades();
     };
