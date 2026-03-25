@@ -1194,6 +1194,64 @@ HTML_TEMPLATE = r"""<!doctype html>
     .sym-add-btn { color: var(--green); font-size: 24px; cursor: pointer; }
     .sym-add-btn.added { color: var(--muted); cursor: default; }
 
+
+    /* ======= 成功反馈动画 ======= */
+    .success-overlay {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.45);
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .success-overlay.show { opacity: 1; pointer-events: auto; }
+
+    .success-card {
+      background: #fff; border-radius: 20px;
+      padding: 36px 40px 28px;
+      display: flex; flex-direction: column; align-items: center; gap: 16px;
+      transform: scale(0.78); opacity: 0;
+      transition: transform 0.28s cubic-bezier(0.34,1.56,0.64,1), opacity 0.22s ease;
+      min-width: 200px;
+    }
+    .success-overlay.show .success-card { transform: scale(1); opacity: 1; }
+
+    /* SVG 圆圈 + 勾 */
+    .success-ring { width: 72px; height: 72px; }
+    .success-ring circle {
+      fill: none; stroke: #e5e5ea; stroke-width: 5;
+    }
+    .success-ring .ring-progress {
+      fill: none; stroke-width: 5; stroke-linecap: round;
+      stroke-dasharray: 188; stroke-dashoffset: 188;
+      transform-origin: center; transform: rotate(-90deg);
+      transition: none;
+    }
+    .success-ring .ring-progress.buy-ring  { stroke: var(--blue); }
+    .success-ring .ring-progress.close-ring { stroke: var(--green); }
+    .success-overlay.show .ring-progress {
+      animation: drawRing 0.45s ease-out 0.05s forwards;
+    }
+    @keyframes drawRing { to { stroke-dashoffset: 0; } }
+
+    .success-ring .tick {
+      fill: none; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round;
+      stroke-dasharray: 60; stroke-dashoffset: 60;
+    }
+    .success-ring .tick.buy-tick  { stroke: var(--blue); }
+    .success-ring .tick.close-tick { stroke: var(--green); }
+    .success-overlay.show .tick {
+      animation: drawTick 0.3s ease-out 0.45s forwards;
+    }
+    @keyframes drawTick { to { stroke-dashoffset: 0; } }
+
+    .success-label {
+      font-size: 18px; font-weight: bold; color: var(--text);
+      letter-spacing: 1px;
+    }
+    .success-sub {
+      font-size: 13px; color: var(--muted); margin-top: -8px;
+    }
+
   </style>
 </head>
 <body>
@@ -1268,9 +1326,9 @@ HTML_TEMPLATE = r"""<!doctype html>
   <!-- Positions Tab -->
   <div class="tab-content" id="tab-positions">
     <div class="pos-header">
-      <div class="pos-h-row"><span class="label">结余:</span><span class="val" id="valBalance">0.00</span></div>
-      <div class="pos-h-row"><span class="label">净值:</span><span class="val" id="valEquity">0.00</span></div>
-      <div class="pos-h-row"><span class="label">可用预付款:</span><span class="val" id="valFreeMargin">0.00</span></div>
+      <div class="pos-h-row"><span class="label">结余:</span><span class="val" id="valBalance"></span></div>
+      <div class="pos-h-row"><span class="label">净值:</span><span class="val" id="valEquity"></span></div>
+      <div class="pos-h-row"><span class="label">可用预付款:</span><span class="val" id="valFreeMargin"></span></div>
     </div>
     <div class="pos-list-title">持仓</div>
     <div id="list-positions"></div>
@@ -1281,10 +1339,23 @@ HTML_TEMPLATE = r"""<!doctype html>
   <!-- History Tab -->
   <div class="tab-content" id="tab-history">
     <div class="pos-header">
-      <div class="pos-h-row"><span class="label">利润:</span><span class="val" id="valProfit">0.00</span></div>
-      <div class="pos-h-row"><span class="label">结余:</span><span class="val" id="valHistBalance">0.00</span></div>
+      <div class="pos-h-row"><span class="label">利润:</span><span class="val" id="valProfit"></span></div>
+      <div class="pos-h-row"><span class="label">结余:</span><span class="val" id="valHistBalance"></span></div>
     </div>
     <div id="list-history"></div>
+  </div>
+
+  <!-- 成功反馈动画层 -->
+  <div class="success-overlay" id="successOverlay" onclick="hideSuccess()">
+    <div class="success-card" id="successCard">
+      <svg class="success-ring" viewBox="0 0 72 72" id="successSvg">
+        <circle cx="36" cy="36" r="30"/>
+        <circle class="ring-progress" id="ringProgress" cx="36" cy="36" r="30"/>
+        <polyline class="tick" id="successTick" points="20,37 30,47 52,25"/>
+      </svg>
+      <div class="success-label" id="successLabel">下单成功</div>
+      <div class="success-sub" id="successSub">指令已发送至 MT4</div>
+    </div>
   </div>
 
   <!-- Bottom Nav -->
@@ -1406,7 +1477,10 @@ HTML_TEMPLATE = r"""<!doctype html>
     let quoteInterval = null;
     let quizAnswers = {};
 
-    function fmtNum(n, d) { return parseFloat(n || 0).toFixed(d); }
+    function fmtNum(n, d) {
+      if (n === null || n === undefined || n === '' || isNaN(parseFloat(n))) return '';
+      return parseFloat(n).toFixed(d);
+    }
 
     const categoryPairs = {
       'Forex': [
@@ -1532,7 +1606,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     window.onload = () => {
       renderQuotes();
       selectSymbol('XAUUSD', 5110.43, 'Spot Gold');
-      setInterval(refreshData, 3000);
+      setInterval(refreshData, 1500);
     };
 
     function renderQuotes() {
@@ -1737,7 +1811,11 @@ HTML_TEMPLATE = r"""<!doctype html>
         window.quantState.orderType, 
         0, 20, lotsToSend, params
       ).then(res => {
-        if(res.success) { alert('指令发送成功'); refreshData(); }
+        if(res.success) {
+          const sideType = (window.quantState.pendingSide||'').toLowerCase() === 'sell' ? 'sell' : 'buy';
+          showSuccess(sideType);
+          refreshData();
+        }
         else alert('发送失败: ' + res.message);
       });
     };
@@ -1765,20 +1843,76 @@ HTML_TEMPLATE = r"""<!doctype html>
       cancelCommand: async function(id) { alert("暂不支持前端撤单"); }
     };
 
+    // ======= 成功反馈动画 =======
+    let _successTimer = null;
+    function showSuccess(type) {
+      // type: 'buy' | 'sell' | 'close'
+      const overlay = $('successOverlay');
+      const label   = $('successLabel');
+      const sub     = $('successSub');
+      const ring    = $('ringProgress');
+      const tick    = $('successTick');
+
+      // 重置动画（强制 reflow）
+      overlay.classList.remove('show');
+      ring.classList.remove('buy-ring','close-ring');
+      tick.classList.remove('buy-tick','close-tick');
+      void overlay.offsetWidth; // reflow
+
+      if (type === 'close') {
+        label.innerText = '平仓成功';
+        sub.innerText   = '平仓指令已发送至 MT4';
+        ring.classList.add('close-ring');
+        tick.classList.add('close-tick');
+      } else if (type === 'sell') {
+        label.innerText = '做空成功';
+        sub.innerText   = '卖出指令已发送至 MT4';
+        ring.classList.add('buy-ring');
+        tick.classList.add('buy-tick');
+      } else {
+        label.innerText = '下单成功';
+        sub.innerText   = '买入指令已发送至 MT4';
+        ring.classList.add('buy-ring');
+        tick.classList.add('buy-tick');
+      }
+
+      overlay.classList.add('show');
+
+      clearTimeout(_successTimer);
+      _successTimer = setTimeout(hideSuccess, 1800);
+    }
+
+    function hideSuccess() {
+      clearTimeout(_successTimer);
+      $('successOverlay').classList.remove('show');
+    }
+
     async function refreshData() {
         try {
             const sym = $('tradeSym').innerText;
             const res = await fetch(`/api/latest_status?symbol=${sym}`);
-            if(!res.ok) return;
+            if(!res.ok) {
+                // 接收失败 -> 清空显示
+                ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
+                return;
+            }
             const data = await res.json();
             
-            if(data) {
+            // 判断是否有效数据（非空对象）
+            const hasData = data && (data.balance !== undefined || data.equity !== undefined);
+            
+            if(hasData) {
                 $('valBalance').innerText = fmtNum(data.balance, 2);
                 $('valEquity').innerText = fmtNum(data.equity, 2);
                 $('valFreeMargin').innerText = fmtNum(data.free_margin, 2);
                 $('valHistBalance').innerText = fmtNum(data.balance, 2);
                 $('valProfit').innerText = fmtNum(data.daily_pnl, 2);
-                
+            } else {
+                // 未获取到数据 -> 清空显示
+                ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
+            }
+            
+            if(data) {
                 if(data.latest_quote) {
                     window.quantState.price = data.latest_quote.bid;
                     $('tBid').innerText = fmtNum(data.latest_quote.bid, sym==='XAUUSD'?2:4);
@@ -1796,7 +1930,11 @@ HTML_TEMPLATE = r"""<!doctype html>
                     updatePendingOrdersList(pendingData.commands || []);
                 }
             }
-        } catch(e) { console.error("Refresh Error:", e); }
+        } catch(e) {
+            // 网络异常 -> 清空显示
+            ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
+            console.error("Refresh Error:", e);
+        }
     }
 
     function updatePositionsList(positions) {
@@ -1892,7 +2030,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         const sl = parseFloat($('modSlPrice').value) || 0;
         window.API.modifyPosition(window.quantState.currentModifyTicket, tp, sl)
         .then(res => {
-            if(res.success) { alert('已发送修改'); $('modifyMask').style.display='none'; refreshData(); }
+            if(res.success) { showSuccess('buy'); $('modifyMask').style.display='none'; refreshData(); }
             else alert(res.message);
         });
     };
@@ -1903,7 +2041,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         const lots = window.quantState.currentModifyLots || 0;
         window.API.submitOrder(sym, 'CLOSE', 'market', 0, 20, lots, {ticket: window.quantState.currentModifyTicket})
         .then(res => {
-            if(res.success) { alert('已发送平仓指令'); $('modifyMask').style.display='none'; refreshData(); }
+            if(res.success) { showSuccess('close'); $('modifyMask').style.display='none'; refreshData(); }
             else alert(res.message);
         });
     }
