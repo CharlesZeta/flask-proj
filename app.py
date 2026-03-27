@@ -33,8 +33,6 @@ pause_lock = threading.RLock()
 def generate_unique_cmd_id():
     """生成全局唯一且单调递增的命令 ID"""
     global cmd_counter
-    # 使用毫秒级时间戳 + 计数器，确保即使重启也不会重复 (假设重启间隔 > 1ms)
-    # 格式: TS_COUNTER (例如 1715000000000_1)
     ms = int(time.time() * 1000)
     with commands_lock:
         cmd_counter += 1
@@ -73,7 +71,7 @@ PRODUCT_SPECS = {
     "DSHUSD": {"size": 1000, "lev": 500, "currency": "USD", "type": "crypto"},
 }
 
-# 外汇品种补充到 PRODUCT_SPECS（保持与新程序一致）
+# 外汇品种
 PRODUCT_SPECS.update({
     "USDCHF":{"size":100000,"lev":500,"currency":"CHF","type":"forex"},
     "GBPUSD":{"size":100000,"lev":500,"currency":"USD","type":"forex"},
@@ -139,13 +137,10 @@ PRODUCT_SPECS.update({
     "V":{"size":100,"lev":10,"currency":"USD","type":"stock"},
 })
 
-# 默认规则
 DEFAULT_FOREX_SPEC = {"size": 100000, "lev": 500, "type": "forex"}
 DEFAULT_STOCK_SPEC = {"size": 100, "lev": 10, "currency": "USD", "type": "stock"}
 
-# ==================== 品种名归一化（核心修复）====================
-# 经纪商常给品种加后缀：EURUSDm, XAUUSD.a, NASUSDc, U30USD.r 等
-# 归一化后才能在 cache 和 history 中正确匹配
+# ==================== 品种名归一化 ====================
 KNOWN_SYMBOLS = set(PRODUCT_SPECS.keys())
 
 def normalize_symbol(raw_symbol: str) -> str:
@@ -154,7 +149,6 @@ def normalize_symbol(raw_symbol: str) -> str:
     s = raw_symbol.strip().upper()
     if s in KNOWN_SYMBOLS:
         return s
-    # 去掉末尾 1-4 字符尝试匹配（处理 m/c/r/.a 等后缀）
     for trim in range(1, 5):
         candidate = s[:-trim] if len(s) > trim else ""
         if candidate and candidate in KNOWN_SYMBOLS:
@@ -167,9 +161,9 @@ def normalize_symbol(raw_symbol: str) -> str:
         candidate = s.split('_')[0]
         if candidate in KNOWN_SYMBOLS:
             return candidate
-    return s  # 未能归一化则原样返回（大写）
+    return s
 
-# ==================== 报价缓存（O(1) 查询）====================
+# ==================== 报价缓存 ====================
 latest_quote_cache = {}
 quote_cache_lock   = threading.Lock()
 
@@ -179,7 +173,6 @@ def _to_float(v):
     except: return None
 
 def _bid_ask_from_dict(d):
-    """兼容 bid/Bid/BID 等不同大小写"""
     if not isinstance(d, dict): return None, None
     for bk, ak in (("bid","ask"),("Bid","Ask"),("BID","ASK")):
         b, a = _to_float(d.get(bk)), _to_float(d.get(ak))
@@ -188,7 +181,6 @@ def _bid_ask_from_dict(d):
     return None, None
 
 def _message_to_quote_dict(p):
-    """message 字段可能是 JSON 字符串或已是 dict"""
     m = p.get("message")
     if m is None: return None
     if isinstance(m, dict): return m
@@ -200,7 +192,6 @@ def _message_to_quote_dict(p):
     return None
 
 def cache_tick_quote(raw_symbol, bid, ask, spread=None, ts=None):
-    """写入归一化品种的报价缓存"""
     norm = normalize_symbol(raw_symbol or "")
     if not norm: return
     b, a = _to_float(bid), _to_float(ask)
@@ -213,7 +204,6 @@ def cache_tick_quote(raw_symbol, bid, ask, spread=None, ts=None):
         }
 
 def ingest_quote_from_parsed(p):
-    """从 MT4 任意 report 解析对象中尽量提取 bid/ask 写入缓存"""
     if not isinstance(p, dict): return
     rs = p.get("symbol") or p.get("Symbol") or ""
     b, a = _bid_ask_from_dict(p)
@@ -242,7 +232,6 @@ def _floor_ts(ts_ms, tf):
     return (ts_ms // step) * step
 
 def update_kline(raw_symbol, bid, ask, tick_ts_ms):
-    """更新内存 K 线，bar 格式: [ts, open, high, low, close]"""
     mid  = (float(bid) + float(ask)) / 2.0
     norm = normalize_symbol(raw_symbol)
     with _get_kline_lock(norm):
@@ -253,9 +242,9 @@ def update_kline(raw_symbol, bid, ask, tick_ts_ms):
             bars   = kline_data[norm][tf]
             if bars and bars[-1][0] == bar_ts:
                 bar    = bars[-1]
-                bar[2] = max(bar[2], mid)   # high
-                bar[3] = min(bar[3], mid)   # low
-                bar[4] = mid                # close
+                bar[2] = max(bar[2], mid)
+                bar[3] = min(bar[3], mid)
+                bar[4] = mid
             else:
                 bars.append([bar_ts, mid, mid, mid, mid])
                 if len(bars) > KLINE_MAX[tf]:
@@ -263,23 +252,17 @@ def update_kline(raw_symbol, bid, ask, tick_ts_ms):
 
 # ==================== 命令过期清理 ====================
 def cleanup_expired_commands():
-    """清理过期命令，防止积压，并记录过期状态"""
     now = int(time.time())
     with commands_lock:
-        # 识别过期命令 (默认 600s TTL 如果未设置)
         expired = [c for c in commands if now - c.get("created_at", 0) >= c.get("ttl_sec", 600)]
-        
-        # 保留未过期的命令
         commands[:] = [c for c in commands if now - c.get("created_at", 0) < c.get("ttl_sec", 600)]
-        
         if expired:
             print(f"[CLEANUP] 清理了 {len(expired)} 条过期命令")
             with history_lock:
                 for cmd in expired:
-                    # 构造一个模拟的过期报告
                     record = {
                         "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "ip": "127.0.0.1", # Internal
+                        "ip": "127.0.0.1",
                         "method": "INTERNAL",
                         "path": "cleanup",
                         "category": "report",
@@ -297,28 +280,17 @@ def cleanup_expired_commands():
                     }
                     history_report.appendleft(record)
 
-# 定时清理线程
 def cleanup_scheduler():
     while True:
-        time.sleep(5)  # 每5秒检查一次
+        time.sleep(5)
         cleanup_expired_commands()
 
 cleanup_thread = threading.Thread(target=cleanup_scheduler, daemon=True)
 cleanup_thread.start()
 
-# ==================== 时间限制函数 ====================
+# ==================== 时间限制 ====================
 def is_restricted_time():
-    """判断当前时间是否处于限制时段（功能已关闭）"""
-    # 暂时关闭时间限制，允许全天交易
     return False
-    
-    # now = datetime.now()
-    # h = now.hour
-    # # 规则：只有 5:00 - 24:00 允许交易 (即 [5, 24))
-    # # 禁止时段: 0, 1, 2, 3, 4 点
-    # if 0 <= h < 5:
-    #     return True
-    # return False
 
 # ==================== 工具函数 ====================
 def generate_nonce():
@@ -330,7 +302,6 @@ def norm_str(x):
     return str(x).strip()
 
 def norm_side(x):
-    """side 归一化：兼容 buy/sell/b/s/long/short"""
     s = norm_str(x).lower()
     if s in ("buy", "sell"):
         return s
@@ -341,12 +312,10 @@ def norm_side(x):
     return ""
 
 def norm_symbol(x):
-    """symbol 归一化：大写 + 去除空格"""
     s = norm_str(x).strip().upper()
     return s
 
 def norm_volume(x):
-    """volume 归一化：兼容 volume/lots/size"""
     try:
         v = float(x)
         return v if v > 0 else 0
@@ -372,21 +341,17 @@ def try_parse_json(raw_body: str):
         remaining = cleaned[idx:].strip()
         if remaining:
             remaining_data = remaining[:200]
-            print(f"[WARN] 检测到JSON后剩余数据: {remaining_data}")
     except json.JSONDecodeError as e:
         parse_error = str(e)
         parse_error_detail = traceback.format_exc()
         print(f"[ERR] JSON解析错误: {e}")
-        print(f"[ERR] 原始body(前500字符): {cleaned[:500]}")
     except Exception as e:
         parse_error = f"未知异常: {str(e)}"
         parse_error_detail = traceback.format_exc()
-        print(f"[ERR] 解析时发生未知异常: {e}")
 
     return parsed_json, parse_error, parse_error_detail, remaining_data
 
 def detect_category(path: str, parsed_json: dict):
-    """按接口路径 + body结构判断分类"""
     if path.endswith("/web/api/mt4/status"):
         return "status"
     if path.endswith("/web/api/mt4/positions"):
@@ -396,10 +361,7 @@ def detect_category(path: str, parsed_json: dict):
     if path.endswith("/web/api/echo"):
         return "echo"
     if path.endswith("/web/api/mt4/commands"):
-        # 轮询请求 body 只包含 account 和 max
-        if isinstance(parsed_json, dict) and set(parsed_json.keys()).issubset({"account", "max"}):
-            return "poll"
-        return "poll"  # 默认归为 poll，避免污染其他分类
+        return "poll"
     return "other"
 
 def store_mt4_data(raw_body, client_ip, headers_dict):
@@ -429,7 +391,6 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
         "positions": parsed_json.get("positions") if isinstance(parsed_json, dict) else None,
     }
 
-    # 只要是 report / quote 类消息，都尝试解析 bid/ask 写入快速缓存
     if isinstance(parsed_json, dict) and category in ("report", "other"):
         ingest_quote_from_parsed(parsed_json)
 
@@ -440,16 +401,11 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
             history_positions.appendleft(record)
         elif category == "report":
             history_report.appendleft(record)
-            # 日志记录 report
             if record.get("parsed"):
                 parsed = record["parsed"]
                 desc = parsed.get("desc", "")
-                
-                # 如果是交易执行报告 (ok=True/False 且有 cmd_id)，则持久化保存
-                # 排除 QUOTE_DATA 和 INTERNAL 类型，以及 quote 指令报告(q_开头)
                 cmd_id_str = str(parsed.get("cmd_id", ""))
                 if desc != "QUOTE_DATA" and record.get("method") != "INTERNAL" and parsed.get("cmd_id") and not cmd_id_str.startswith("q_"):
-                    # 尝试从 message 字段中解析出额外信息（EA 可能把详情塞在 JSON message 里）
                     msg_extra = {}
                     try:
                         raw_msg = parsed.get("message", "")
@@ -458,7 +414,6 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
                     except Exception:
                         pass
                     def _pick(*keys):
-                        """依次从 parsed / msg_extra 里取第一个非 None 值"""
                         for k in keys:
                             v = parsed.get(k)
                             if v is not None: return v
@@ -473,7 +428,6 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
                         "error":       _pick("error"),
                         "message":     parsed.get("message"),
                         "exec_ms":     _pick("exec_ms"),
-                        # —— 扩展字段 ——
                         "symbol":      _pick("symbol"),
                         "side":        _pick("side", "type", "action"),
                         "volume":      _pick("volume", "lots"),
@@ -495,9 +449,6 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
             history_poll.appendleft(record)
         elif category == "echo":
             history_echo.appendleft(record)
-        else:
-            # 其他未知类型，可丢弃或存入一个专门队列
-            pass
 
     return parsed_json, record
 
@@ -505,31 +456,24 @@ def safe_num(x):
     return isinstance(x, (int, float))
 
 # ==================== 风控逻辑 ====================
-# 全局风控状态
 risk_state = {
-    "is_fused": False,          # 是否熔断 (当日不再交易)
-    "cooldown_until": 0,        # 冷静期结束时间戳 (0 表示无冷静期)
-    "consecutive_losses": 0,    # 连续亏损次数
-    "last_reset_day": None,     # 上次重置风控状态的日期
-    "locked_tickets": set()     # 锁定的订单 Ticket (禁止手动操作)
+    "is_fused": False,
+    "cooldown_until": 0,
+    "consecutive_losses": 0,
+    "last_reset_day": None,
+    "locked_tickets": set()
 }
 risk_lock = threading.RLock()
 
 def get_utc8_date_str():
-    """获取当前 UTC+8 日期字符串 YYYY-MM-DD"""
     return datetime.utcfromtimestamp(time.time() + 8*3600).strftime("%Y-%m-%d")
 
 def check_risk_status(account, current_equity, day_start_equity):
-    """
-    检查风控状态，返回 (是否允许交易, 拒绝原因/状态描述, 状态类型)
-    状态类型: "normal", "fused", "cooldown", "restricted_time"
-    """
     global risk_state
     now = int(time.time())
     today_str = get_utc8_date_str()
     
     with risk_lock:
-        # 1. 跨天重置
         if risk_state["last_reset_day"] != today_str:
             risk_state["is_fused"] = False
             risk_state["consecutive_losses"] = 0
@@ -537,57 +481,42 @@ def check_risk_status(account, current_equity, day_start_equity):
             risk_state["last_reset_day"] = today_str
             print(f"[RISK] New day {today_str}, reset risk state.")
 
-        # 2. 检查熔断 (当日不再交易)
         if risk_state["is_fused"]:
             return False, "触发熔断机制，今日交易已停止", "fused"
 
-        # 3. 检查冷静期
         if now < risk_state["cooldown_until"]:
             remaining = int((risk_state["cooldown_until"] - now) / 60)
             return False, f"处于冷静期，还需等待 {remaining} 分钟", "cooldown"
 
-        # 4. 检查日内亏损 (累计亏损 > 9%)
         if day_start_equity > 0:
             daily_pnl_pct = (current_equity - day_start_equity) / day_start_equity
-            if daily_pnl_pct < -0.09: # 亏损超过 9%
+            if daily_pnl_pct < -0.09:
                 risk_state["is_fused"] = True
                 print(f"[RISK] Daily loss {daily_pnl_pct*100:.2f}% > 9%, FUSED.")
                 return False, "日内亏损超限，触发熔断", "fused"
 
-        # 5. 检查时间限制 (0:00 - 5:00)
-        # 注意：这里复用 is_restricted_time 逻辑，但为了统一返回格式，单独判断
         if is_restricted_time():
              return False, "交易已暂停 (系统维护时段)", "restricted_time"
 
     return True, "交易正常", "normal"
 
 def update_risk_after_trade(trade_profit, open_price, close_price, side):
-    """
-    每笔交易结算后更新风控计数器
-    trade_profit: 交易盈亏 (USD)
-    """
     global risk_state
     with risk_lock:
         if trade_profit < 0:
             risk_state["consecutive_losses"] += 1
             print(f"[RISK] Loss detected. Consecutive: {risk_state['consecutive_losses']}")
-            
-            # 规则：连续亏损 3 次 -> 熔断
             if risk_state["consecutive_losses"] >= 3:
                 risk_state["is_fused"] = True
                 print("[RISK] Consecutive losses >= 3, FUSED.")
-            
-            # 规则：连续亏损 2 次 -> 冷静 1 小时
             elif risk_state["consecutive_losses"] == 2:
                 risk_state["cooldown_until"] = int(time.time()) + 3600
                 print("[RISK] Consecutive losses == 2, Cooldown 1h.")
         else:
-            # 盈利则重置连亏计数 (除非需求是"累计"连亏? 通常连亏是指连续的)
-            # 用户描述："连续亏损不超过3次"，意味着盈利会打断连亏
             if trade_profit > 0:
                 risk_state["consecutive_losses"] = 0
 
-# ==================== 数据持久化 (每日盈亏 & 历史委托) ====================
+# ==================== 数据持久化 ====================
 DAILY_STATS_FILE = "daily_stats.json"
 HISTORY_TRADES_FILE = "history_trades.json"
 daily_stats_lock = threading.RLock()
@@ -620,19 +549,14 @@ def load_history_trades():
         return []
 
 def save_history_trade(trade_record):
-    """追加单条历史记录到文件"""
     with history_file_lock:
         current_history = load_history_trades()
-        # 避免重复添加 (根据 cmd_id)
         if trade_record.get("cmd_id"):
             if any(t.get("cmd_id") == trade_record["cmd_id"] for t in current_history):
                 return
-        
-        current_history.insert(0, trade_record) # 最新的在前
-        # 限制历史记录数量，防止文件过大 (例如保留最近 1000 条)
+        current_history.insert(0, trade_record)
         if len(current_history) > 1000:
             current_history = current_history[:1000]
-            
         try:
             with open(HISTORY_TRADES_FILE, "w", encoding="utf-8") as f:
                 json.dump(current_history, f, ensure_ascii=False, indent=2)
@@ -640,11 +564,9 @@ def save_history_trade(trade_record):
             print(f"[ERR] Save history trade failed: {e}")
 
 def delete_history_trade_by_id(cmd_id):
-    """根据 cmd_id 删除历史记录"""
     with history_file_lock:
         current_history = load_history_trades()
         new_history = [t for t in current_history if str(t.get("cmd_id")) != str(cmd_id)]
-        
         if len(new_history) != len(current_history):
             try:
                 with open(HISTORY_TRADES_FILE, "w", encoding="utf-8") as f:
@@ -655,148 +577,97 @@ def delete_history_trade_by_id(cmd_id):
         return False
 
 def update_daily_stats_from_record(record):
-    """从 status 记录中提取 daily_pnl 并更新到文件"""
     if not record or not record.get("parsed"):
         return
-        
-    # 先补全计算字段 (daily_pnl)
     parsed = auto_fill_status(record["parsed"])
-    
     daily_pnl = parsed.get("daily_pnl")
     if daily_pnl is None:
         return
-        
-    # 获取日期 (UTC+8)
     ts = parsed.get("ts") or int(time.time())
-    # 转为 UTC+8 datetime
     dt_utc8 = datetime.utcfromtimestamp(ts + 8*3600)
-    date_str = dt_utc8.strftime("%Y-%m-%d") # Key: "YYYY-MM-DD"
-    
-    # 只需要更新当天的，因为 daily_pnl 是累计值（截至当前）
-    # 但要注意：如果是补发昨天的包，不应覆盖。
-    # 简单起见，我们假设收到的都是最新的。
-    
+    date_str = dt_utc8.strftime("%Y-%m-%d")
     with daily_stats_lock:
         stats = load_daily_stats()
-        # 更新当天的盈亏 (覆盖旧值，因为是累计)
-        # 格式：{"YYYY-MM-DD": float}
         current_val = round(float(daily_pnl), 2)
-        
-        # 仅当数值变化时才保存和打印日志，避免频繁 I/O
         if stats.get(date_str) != current_val:
             stats[date_str] = current_val
             save_daily_stats(stats)
             print(f"[DAILY_STATS] Saved {date_str}: {current_val} (Account: {parsed.get('account')})")
 
 # ==================== 日内计算（UTC+8）====================
-# 存储每个账户的日初净值（UTC+8 0点刷新）
-day_start_equity_store = {}  # {account: (timestamp, equity)}
+day_start_equity_store = {}
 
 def get_utc8_now():
-    """获取当前 UTC+8 时间戳（秒）"""
     return int(time.time()) + 8 * 3600
 
 def is_utc8_new_day(last_ts, current_ts):
-    """判断 UTC+8 时间戳是否跨了一天"""
     from datetime import datetime
     def utc8_date(ts):
         return datetime.utcfromtimestamp(ts + 8*3600).date()
     return utc8_date(last_ts) != utc8_date(current_ts)
 
 def get_day_start_equity(account, current_equity):
-    """
-    获取日初净值（UTC+8 0点为界）
-    - 如果跨了新的一天，更新日初净值为当前净值
-    - 否则返回上次记录的日初净值
-    """
     global day_start_equity_store
     now = get_utc8_now()
-
     if account not in day_start_equity_store:
-        # 首次记录
         day_start_equity_store[account] = (now, current_equity)
         return current_equity
-
     last_ts, last_equity = day_start_equity_store[account]
     if is_utc8_new_day(last_ts, now):
-        # 新的一天，重置日初净值为当前净值
         day_start_equity_store[account] = (now, current_equity)
         return current_equity
-
     return last_equity
 
 def calc_lots_from_margin_usd(symbol, margin_usd, data):
-    """根据投入保证金金额(USD)计算手数"""
-    equity = data.get("equity", 0)
-    # 获取最新价格
     price = get_latest_price(symbol)
     if not price or price <= 0:
         print(f"[CALC_LOTS] Error: Price 0 or missing for {symbol}")
         return 0.0
-    
-    # 查找规则
     spec = PRODUCT_SPECS.get(symbol)
     if not spec:
-        # 默认回退逻辑
         if len(symbol) == 6 and symbol.isupper():
             spec = DEFAULT_FOREX_SPEC.copy()
-            # 简单推断 settle currency: 后3位
             spec["currency"] = symbol[3:]
         else:
             spec = DEFAULT_STOCK_SPEC.copy()
-    
-    # 获取结算货币对 USD 的汇率
     settle_currency = spec.get("currency", "USD")
     rate_to_usd = get_rate_to_usd(settle_currency)
-    
     contract_size = spec["size"]
     leverage = spec["lev"]
-    
-    # 计算公式: 
-    # Notional (Base) = Price * ContractSize * Lots
-    # Margin (Base) = Notional / Leverage
-    # Margin (USD) = Margin (Base) * RateToUSD
-    # -> Margin (USD) = (Price * ContractSize * Lots / Leverage) * RateToUSD
-    # -> Lots = (Margin (USD) * Leverage) / (Price * ContractSize * RateToUSD)
-    
-    # 防止除零
     if price <= 0 or rate_to_usd <= 0:
         return 0.0
-        
     lots = (margin_usd * leverage) / (price * contract_size * rate_to_usd)
     print(f"[CALC_LOTS] {symbol} Margin=${margin_usd} Lev={leverage} Price={price} Rate={rate_to_usd} -> Lots={lots:.4f}")
     return lots
 
 def get_rate_to_usd(currency):
-    """获取指定货币兑 USD 的汇率 (例如 EUR -> USD, JPY -> USD)"""
     if currency == "USD":
         return 1.0
-    
-    # 尝试查找 XXUSD
     pair1 = f"{currency}USD"
     price1 = get_latest_price(pair1)
     if price1:
         return price1
-        
-    # 尝试查找 USDXX (反向)
     pair2 = f"USD{currency}"
     price2 = get_latest_price(pair2)
     if price2 and price2 > 0:
         return 1.0 / price2
-        
-    # 简单兜底: 如果是 HKD (固定汇率近似)
     if currency == "HKD": return 1.0 / 7.8
-    
-    # 兜底: 找不到汇率时，暂时按 1:1 处理并警告 (避免无法下单)
     print(f"[WARN] Cannot find rate for {currency} -> USD, using 1.0")
     return 1.0
 
+# ★ FIX #2: get_latest_price 优先走 O(1) 缓存，消除每次扫描 history_report 的延迟
 def get_latest_price(symbol):
-    """从 history_report 或 latest_quote 中查找最新价格"""
-    # 优先查 history_report 中的 QUOTE_DATA
-    # 注意：此函数如果在 with history_lock 内部调用是安全的（锁可重入）
-    # 但如果是跨线程或在非锁环境下调用，建议调用方自己管理锁
-    # 这里加锁是为了安全，RLock 允许同一线程多次获取
+    """优先从 O(1) 报价缓存取价，fallback 到 history_report 扫描"""
+    norm = normalize_symbol(symbol or "")
+    # 优先走缓存，避免每次都加 history_lock 做线性扫描
+    with quote_cache_lock:
+        cq = latest_quote_cache.get(norm)
+    if cq:
+        b, a = _to_float(cq.get("bid")), _to_float(cq.get("ask"))
+        if b and a:
+            return (b + a) / 2.0
+
+    # fallback：扫描 history_report（兼容旧 EA 不推 /api/tick 的情况）
     with history_lock:
         for record in history_report:
             parsed = record.get("parsed")
@@ -804,35 +675,20 @@ def get_latest_price(symbol):
                 try:
                     msg = json.loads(parsed.get("message", "{}"))
                     if "bid" in msg:
-                        # print(f"[PRICE] Found {symbol} bid={msg['bid']}") # 可选：过于频繁可不打
-                        return (msg["bid"] + msg["ask"]) / 2 # 取中间价估算
+                        return (msg["bid"] + msg["ask"]) / 2
                 except:
                     pass
     print(f"[PRICE] Warn: No quote found for {symbol}")
     return None
 
 def calc_lot_info(symbol, price, lots):
-    """计算单手信息 (供前端展示)"""
     spec = PRODUCT_SPECS.get(symbol)
     if not spec:
         if len(symbol) == 6: spec = DEFAULT_FOREX_SPEC.copy(); spec["currency"] = symbol[3:]
         else: spec = DEFAULT_STOCK_SPEC.copy()
-        
     settle_curr = spec.get("currency", "USD")
     rate = get_rate_to_usd(settle_curr)
-    
-    # 单手保证金 (USD)
     margin_per_lot_usd = (price * spec["size"] / spec["lev"]) * rate
-    
-    # 每点价值 (USD) - 估算
-    # Point Value (Base) = ContractSize * PointSize
-    # 这里简化：假设 forex point=0.00001 or 0.001 (JPY)
-    # 实际上需要知道 PointSize。对于大多数 API，point value 也可以通过 symbol properties 获取
-    # 这里做个简单估算：
-    # Forex (非JPY): 100000 * 0.00001 = 1 Base -> * Rate
-    # JPY: 100000 * 0.001 = 100 JPY -> / USDJPY
-    # XAU: 100 * 0.01 = 1 USD
-    
     point_val_usd = 0
     if spec["type"] == "forex":
         if "JPY" in symbol:
@@ -840,66 +696,21 @@ def calc_lot_info(symbol, price, lots):
         else:
             point_val_usd = (spec["size"] * 0.00001) * rate
     elif spec["type"] == "metal":
-        point_val_usd = spec["size"] * 0.01 # XAUUSD point is usually 0.01
+        point_val_usd = spec["size"] * 0.01
     else:
-        point_val_usd = spec["size"] * 0.01 * rate # 默认泛化
-        
+        point_val_usd = spec["size"] * 0.01 * rate
     return {
         "margin_per_lot_usd": margin_per_lot_usd,
         "point_val_usd": point_val_usd,
         "spec": spec
     }
 
-def calc_exposure_notional(symbol, equity, position_pct, leverage, point_value):
-    """
-    计算 exposure_notional（每点收益影响）
-    symbol: 交易品种
-    equity: 当前净值
-    position_pct: 用户选择的仓位比例（0-100）
-    leverage: 杠杆倍数
-    point_value: 该品种每波动1点的资金影响（从EA获取）
-    
-    返回：每点波动对账户的盈亏金额
-    """
-    if not equity or equity <= 0:
-        return 0.0
-    
-    # 用户选择的仓位对应的资金量
-    position_value = equity * (position_pct / 100.0)
-    
-    # 理论手数 = 仓位资金 / (账户净值 × 杠杆) 
-    # 实际上：手数 = (equity × pct% × leverage) / 当前价格（简化计算）
-    # 简化：直接用 position_value × leverage 作为名义本金，再乘以 point_value
-    if leverage and leverage > 0:
-        # 名义本金 = 仓位资金 × 杠杆
-        notional = position_value * leverage
-    else:
-        notional = position_value
-    
-    # 每点收益 = 名义本金 × point_value（point_value 已单位化）
-    if point_value:
-        return notional * point_value
-    else:
-        return 0.0
-
 def calc_exposure_signal(margin_level, position_pct, leverage=1):
-    """
-    计算 exposure_signal 风控信号
-    margin_level: 保证金比例 %
-    position_pct: 仓位比例 0-100
-    leverage: 杠杆倍数
-    返回: "green", "yellow", "red"
-    """
     if not margin_level or margin_level <= 0:
         return "green"
-
-    # 计算有效杠杆 = margin_level * position_pct / 100
     effective_leverage = margin_level * (position_pct / 100.0)
-
-    # 阈值判断（可配置）
-    YELLOW_THRESHOLD = 3.0   # 3 倍
-    RED_THRESHOLD = 5.0      # 5 倍
-
+    YELLOW_THRESHOLD = 3.0
+    RED_THRESHOLD = 5.0
     if effective_leverage >= RED_THRESHOLD:
         return "red"
     elif effective_leverage >= YELLOW_THRESHOLD:
@@ -908,18 +719,6 @@ def calc_exposure_signal(margin_level, position_pct, leverage=1):
         return "green"
 
 def auto_fill_status(parsed: dict, positions=None, position_pct=0):
-    """
-    自动补齐 / 兜底计算：
-    - margin_level = equity / margin * 100
-    - floating_pnl 缺失 -> 0
-    - daily_pnl = equity - day_start_equity (UTC+8 0点为界)
-    - daily_return = daily_pnl / day_start_equity (%)
-    - exposure_notional: 用户选择仓位 * 杠杆 * 品种点值
-    - exposure_signal: green/yellow/red 风控灯
-    - risk_flags 缺失 -> ""
-    - metrics 缺失 -> 补全所有字段为 None 或 0（计数类为 0）
-    - free_margin = equity - margin（如果两者都存在）
-    """
     if not isinstance(parsed, dict):
         return parsed
 
@@ -929,34 +728,25 @@ def auto_fill_status(parsed: dict, positions=None, position_pct=0):
     free_margin = parsed.get("free_margin")
     account = parsed.get("account")
 
-    # floating_pnl：如果没给，就用 0
     if parsed.get("floating_pnl") is None:
         parsed["floating_pnl"] = 0.0
 
-    # margin_level：如果缺失且 margin>0 就算；否则给 None
     if parsed.get("margin_level") is None:
         if safe_num(equity) and safe_num(margin) and margin > 0:
             parsed["margin_level"] = (equity / margin) * 100
         else:
             parsed["margin_level"] = None
 
-    # ===== 日内计算（UTC+8 0点为界）=====
     if account and safe_num(equity):
-        # 获取日初净值（UTC+8 0点刷新）
         day_start_eq = get_day_start_equity(account, equity)
         parsed["day_start_equity"] = day_start_eq
-
-        # 计算日内盈亏 = 当前净值 - 日初净值
         daily_pnl = equity - day_start_eq
         parsed["daily_pnl"] = daily_pnl
-
-        # 日内收益率（转为百分比）
         if day_start_eq and day_start_eq != 0:
             parsed["daily_return"] = (daily_pnl / day_start_eq) * 100
         else:
             parsed["daily_return"] = None
     else:
-        # 如果没有 account 或 equity，保持原有逻辑
         if parsed.get("day_start_equity") is None:
             parsed["day_start_equity"] = None
         if parsed.get("daily_pnl") is None:
@@ -974,12 +764,7 @@ def auto_fill_status(parsed: dict, positions=None, position_pct=0):
             else:
                 parsed["daily_return"] = None
 
-    # ===== exposure_notional 计算 =====
-    # exposure_notional = 每点波动对账户的盈亏金额
-    # 计算公式：仓位资金 × 杠杆 × point_value
     user_position_pct = position_pct if position_pct > 0 else parsed.get("position_pct", 0)
-
-    # 从 positions 获取 point_value（每个持仓品种的每点价值）
     total_point_value = 0.0
     if positions and isinstance(positions, list):
         for pos in positions:
@@ -988,25 +773,14 @@ def auto_fill_status(parsed: dict, positions=None, position_pct=0):
             if pv and lots:
                 total_point_value += pv * lots
 
-    # 如果有持仓数据，计算基础 exposure
     if positions and safe_num(equity) and equity > 0:
-        # 用户选择的仓位对应的资金量
         position_value = equity * (user_position_pct / 100.0)
-        
-        # 默认杠杆（如果没有设置则使用 20）
         leverage = parsed.get("leverage_used", 20) or 20
-        
-        # exposure_notional = 仓位资金 × 杠杆 × 每点价值
-        # 如果有持仓数据，使用持仓的 point_value；否则使用 0.01 近似
         if total_point_value > 0:
             exp_notional = position_value * leverage * total_point_value
         else:
-            # 兜底：假设每点 = 账户的 0.01%
             exp_notional = position_value * leverage * 0.0001
-        
         parsed["exposure_notional"] = round(exp_notional, 2)
-        
-        # leverage_used = exposure_notional / equity (百分比)
         if exp_notional and equity:
             parsed["leverage_used"] = round((exp_notional / equity) * 100, 2)
         else:
@@ -1021,25 +795,21 @@ def auto_fill_status(parsed: dict, positions=None, position_pct=0):
             else:
                 parsed["leverage_used"] = None
 
-    # ===== exposure_signal 风控灯 =====
     margin_level = parsed.get("margin_level")
     if margin_level and user_position_pct > 0:
         parsed["exposure_signal"] = calc_exposure_signal(margin_level, user_position_pct)
     else:
         parsed["exposure_signal"] = "green"
 
-    # risk_flags
     if parsed.get("risk_flags") is None:
         parsed["risk_flags"] = ""
 
-    # free_margin：如果缺失且 equity/margin 有，尝试补一下
     if parsed.get("free_margin") is None:
         if safe_num(equity) and safe_num(margin):
             parsed["free_margin"] = equity - margin
         else:
             parsed["free_margin"] = None
 
-    # metrics：补齐结构
     metrics = parsed.get("metrics")
     if not isinstance(metrics, dict):
         metrics = {}
@@ -1058,7 +828,6 @@ def auto_fill_status(parsed: dict, positions=None, position_pct=0):
             metrics[k] = default
     parsed["metrics"] = metrics
 
-    # 保留原始数值字段
     parsed["balance"] = balance
     parsed["equity"] = equity
     parsed["margin"] = margin
@@ -1068,7 +837,6 @@ def auto_fill_status(parsed: dict, positions=None, position_pct=0):
     return parsed
 
 def extract_latest_details_from_status(record, positions=None):
-    """只用于 status 记录的详情提取 + 自动补齐"""
     if not record:
         return None
 
@@ -1090,16 +858,11 @@ def extract_latest_details_from_status(record, positions=None):
     if not isinstance(parsed, dict):
         return {**base_info, "error": "JSON 解析失败或不是对象"}
 
-    # 优先使用传入的 positions 数据，否则尝试从 record 获取
     if positions is None:
         positions = record.get("positions")
-    
-    # 调用 auto_fill_status 传入 positions 用于计算 exposure
     parsed = auto_fill_status(parsed, positions)
-
     metrics = parsed.get("metrics", {})
     
-    # 注入全局风控状态 (重要)
     global risk_state
     current_risk_status = "normal"
     risk_msg = ""
@@ -1112,11 +875,8 @@ def extract_latest_details_from_status(record, positions=None):
         elif int(time.time()) < risk_state["cooldown_until"]:
             current_risk_status = "cooldown"
             risk_msg = "处于冷静期"
-        
-        # 转换为 list 传给前端
         locked_tickets_list = list(risk_state["locked_tickets"])
     
-    # 如果处于限制时间，也可以在这里覆盖，或者由前端 checkTradeTime 处理
     if is_restricted_time():
         current_risk_status = "restricted_time"
         risk_msg = "系统维护时段"
@@ -1148,9 +908,7 @@ def extract_latest_details_from_status(record, positions=None):
         "executed_commands": metrics.get("executed_commands"),
         "failed_commands": metrics.get("failed_commands"),
         "position_pct": metrics.get("position_pct", 0),
-        # 添加 positions 数据供前端展示
         "positions": positions if positions else [],
-        # 添加风控状态
         "risk_status": current_risk_status,
         "risk_msg": risk_msg,
         "locked_tickets": locked_tickets_list
@@ -1176,7 +934,6 @@ def api_status():
     with pause_lock:
         return jsonify({"paused": paused})
 
-# 网页端获取最新 MT4 状态数据（用于风控计算）
 @app.route("/api/latest_status", methods=["GET"])
 def api_latest_status():
     symbol_filter = request.args.get("symbol", "").upper().strip()
@@ -1186,7 +943,6 @@ def api_latest_status():
     latest_quote  = None
     current_price = 0
 
-    # ---- 优先从 O(1) 报价缓存取 ----
     if norm_filter:
         with quote_cache_lock:
             cq = latest_quote_cache.get(norm_filter)
@@ -1198,7 +954,6 @@ def api_latest_status():
         latest_status_record    = history_status[0]    if history_status    else None
         latest_positions_record = history_positions[0] if history_positions else None
 
-        # 缓存未命中：扫描 history_report（兼容经纪商后缀）
         if not latest_quote:
             for record in history_report:
                 parsed = record.get("parsed")
@@ -1220,7 +975,6 @@ def api_latest_status():
                             current_price = b
                             break
 
-        # 再次兜底：直接从 report 顶层取 bid/ask
         if not latest_quote:
             for record in history_report:
                 parsed = record.get("parsed")
@@ -1250,49 +1004,35 @@ def api_latest_status():
     else:
         return jsonify({})
 
-# 网页端获取历史成交记录
 @app.route("/api/history_trades", methods=["GET"])
 def api_history_trades():
-    """返回历史成交记录（从持久化文件中读取）"""
     limit = request.args.get("limit", 20, type=int)
-    
-    # 优先从文件读取持久化的历史记录
     all_trades = load_history_trades()
-    
-    # 分页/截断
     trades = all_trades[:limit]
-    
     return jsonify({"trades": trades})
 
 @app.route("/api/history_trades/delete", methods=["POST"])
 def delete_history_trade_api():
-    """删除单条历史记录 (需密码验证)"""
     data = request.json
     cmd_id = data.get("cmd_id")
     password = data.get("password", "")
-    
     if password != "1234567dads":
         return jsonify({"success": False, "message": "密码错误"}), 403
-        
     if not cmd_id:
         return jsonify({"success": False, "message": "缺少指令ID"}), 400
-        
     if delete_history_trade_by_id(cmd_id):
         return jsonify({"success": True, "message": "删除成功"})
     else:
         return jsonify({"success": False, "message": "记录不存在或删除失败"}), 404
 
-# ==================== 全量行情接口 ====================
 @app.route("/api/all_quotes", methods=["GET"])
 def api_all_quotes():
-    """直接从 quote_cache 返回所有品种最新行情（O(1)，且已归一化品种名）"""
     with quote_cache_lock:
         result = {sym: dict(q) for sym, q in latest_quote_cache.items()}
     return jsonify(result)
 
 @app.route("/api/kline", methods=["GET"])
 def api_kline():
-    """返回指定品种的 K 线数据"""
     symbol = request.args.get("symbol", "XAUUSD").upper().strip()
     norm   = normalize_symbol(symbol)
     tf     = request.args.get("tf", "5min")
@@ -1328,7 +1068,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .top-bar-actions { display: flex; gap: 15px; font-size: 24px; color: var(--blue); cursor: pointer; }
     .top-bar-actions span:active { opacity: 0.7; }
 
-    /* 实时时钟 */
     .top-clock {
       display: flex; align-items: center; gap: 5px;
       font-size: 12px; font-weight: 500; color: var(--muted);
@@ -1352,7 +1091,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .tab-content { display: none; }
     .tab-content.active { display: block; }
     
-    /* Quotes Tab */
     .q-row { padding: 10px 15px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; cursor: pointer; position: relative; }
     .q-row.edit-mode .q-left { margin-left: 30px; }
     .q-delete-btn { position: absolute; left: -30px; top: 50%; transform: translateY(-50%); color: var(--red); font-size: 24px; transition: 0.3s; opacity: 0; pointer-events: none; }
@@ -1366,7 +1104,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .q-prices .red { color: var(--red); }
     .q-hl { display: flex; gap: 10px; font-size: 11px; color: var(--muted); margin-top: 4px; }
 
-    /* Trade Tab */
     .trade-header { padding: 10px 15px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
     .sym-title { font-size: 20px; font-weight: bold; }
     .sym-desc { font-size: 14px; color: var(--muted); }
@@ -1403,7 +1140,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .btn-place { background: var(--text); }
     .btn-sell:active, .btn-buy:active, .btn-place:active { opacity: 0.8; }
 
-    /* Positions & History Tab */
     .pos-header { padding: 15px; background: var(--nav-bg); border-bottom: 1px solid var(--line); }
     .pos-h-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
     .pos-h-row:last-child { margin-bottom: 0; }
@@ -1423,7 +1159,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .p-profit.red { color: var(--red); }
     .p-row2 { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); }
 
-    /* History trade card */
     .h-card { padding: 12px 15px; border-bottom: 1px solid var(--line); }
     .h-row1 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
     .h-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: #fff; margin-left: 6px; }
@@ -1439,7 +1174,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .h-row2 { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
     .h-row3 { font-size: 12px; color: var(--muted); }
 
-    /* Modals */
     .modalMask { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: flex-end; z-index: 1000; }
     .modal { width: 100%; background: #fff; border-radius: 15px 15px 0 0; padding-bottom: env(safe-area-inset-bottom); animation: slideUp 0.3s ease-out; max-height: 80vh; overflow-y: auto; }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -1448,7 +1182,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .select-item { padding: 15px; border-bottom: 1px solid var(--line); font-size: 16px; text-align: center; cursor: pointer; }
     .select-item:active { background: #f0f0f0; }
 
-    /* Quiz specific */
     .modalBody { padding: 15px; }
     .quiz-item { margin-bottom: 15px; }
     .quiz-q { font-size: 14px; font-weight: bold; margin-bottom: 10px; }
@@ -1456,7 +1189,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .quiz-opt { padding: 10px; border: 1px solid var(--line); border-radius: 8px; text-align: center; font-size: 14px; cursor: pointer; }
     .quiz-opt.selected { background: var(--blue); color: #fff; border-color: var(--blue); }
     .cta { width: 100%; padding: 15px; background: var(--blue); color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; margin-top: 10px; }
-    /* Add Symbol Modal specific */
     .cat-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); background: var(--nav-bg); }
     .cat-tab { padding: 12px 15px; white-space: nowrap; color: var(--muted); font-weight: bold; cursor: pointer; }
     .cat-tab.active { color: var(--blue); border-bottom: 2px solid var(--blue); }
@@ -1467,9 +1199,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .sym-add-btn { color: var(--green); font-size: 24px; cursor: pointer; }
     .sym-add-btn.added { color: var(--muted); cursor: default; }
 
-
-
-    /* K线图区域 */
     .kline-section { margin: 0 0 0 0; border-top: 1px solid var(--line); }
     .kline-header { display: flex; align-items: center; justify-content: space-between;
       padding: 8px 15px; background: #f8f8f8; border-bottom: 1px solid var(--line); }
@@ -1486,7 +1215,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     #klineCanvas, #klineCursor { position: absolute; inset: 0; width: 100%; height: 100%; }
     #klineCursor { pointer-events: none; }
 
-    /* ======= 成功反馈动画 ======= */
     .success-overlay {
       position: fixed; inset: 0; z-index: 9999;
       display: flex; align-items: center; justify-content: center;
@@ -1506,7 +1234,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     }
     .success-overlay.show .success-card { transform: scale(1); opacity: 1; }
 
-    /* SVG 圆圈 + 勾 */
     .success-ring { width: 72px; height: 72px; }
     .success-ring circle {
       fill: none; stroke: #e5e5ea; stroke-width: 5;
@@ -1542,7 +1269,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     .success-sub {
       font-size: 13px; color: var(--muted); margin-top: -8px;
     }
-
   </style>
 </head>
 <body>
@@ -1559,12 +1285,10 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- Quotes Tab -->
   <div class="tab-content active" id="tab-quotes">
     <div id="quotesList"></div>
   </div>
 
-  <!-- Trade Tab -->
   <div class="tab-content" id="tab-trade">
     <div class="trade-header">
       <div class="sym-title" id="tradeSym">XAUUSD</div>
@@ -1618,7 +1342,6 @@ HTML_TEMPLATE = r"""<!doctype html>
       <button class="btn-place" onclick="initiateOrder('PENDING')">下单</button>
     </div>
 
-  <!-- K线区域（嵌入交易Tab底部）-->
   <div class="kline-section" id="klineSection">
     <div class="kline-header">
       <span class="kline-title" id="klineSymLabel">K线</span>
@@ -1636,7 +1359,6 @@ HTML_TEMPLATE = r"""<!doctype html>
   </div>
 </div>
 
-  <!-- Positions Tab -->
   <div class="tab-content" id="tab-positions">
     <div class="pos-header">
       <div class="pos-h-row"><span class="label">结余:</span><span class="val" id="valBalance"></span></div>
@@ -1649,7 +1371,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     <div id="list-orders"></div>
   </div>
 
-  <!-- History Tab -->
   <div class="tab-content" id="tab-history">
     <div class="pos-header">
       <div class="pos-h-row"><span class="label">利润:</span><span class="val" id="valProfit"></span></div>
@@ -1658,7 +1379,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     <div id="list-history"></div>
   </div>
 
-  <!-- 成功反馈动画层 -->
   <div class="success-overlay" id="successOverlay" onclick="hideSuccess()">
     <div class="success-card" id="successCard">
       <svg class="success-ring" viewBox="0 0 72 72" id="successSvg">
@@ -1671,7 +1391,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- Bottom Nav -->
   <div class="bottom-nav">
     <div class="nav-item active" onclick="switchTab('quotes', '行情', this)">
       <div class="nav-icon">📊</div>
@@ -1691,7 +1410,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- Order Type Modal -->
   <div class="modalMask" id="orderTypeMask" onclick="closeModal(event, 'orderTypeMask')">
     <div class="modal">
       <div class="modalHeader">选择交易类型 <span class="close" onclick="$('orderTypeMask').style.display='none'">取消</span></div>
@@ -1705,7 +1423,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- TTL Modal -->
   <div class="modalMask" id="ttlMask" onclick="closeModal(event, 'ttlMask')">
     <div class="modal">
       <div class="modalHeader">期限 <span class="close" onclick="$('ttlMask').style.display='none'">取消</span></div>
@@ -1718,7 +1435,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- Modify Position Modal -->
   <div class="modalMask" id="modifyMask" onclick="closeModal(event, 'modifyMask')">
     <div class="modal">
       <div class="modalHeader">修改订单 <span class="close" onclick="$('modifyMask').style.display='none'">取消</span></div>
@@ -1741,7 +1457,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- Quiz Modal -->
   <div class="modalMask" id="quizMask" onclick="closeModal(event, 'quizMask')">
     <div class="modal">
       <div class="modalHeader">执行前风控检查 <span class="close" onclick="$('quizMask').style.display='none'">取消</span></div>
@@ -1765,16 +1480,11 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- Add Symbol Modal -->
   <div class="modalMask" id="addSymbolMask" onclick="closeModal(event, 'addSymbolMask')">
     <div class="modal" style="height: 90vh;">
       <div class="modalHeader">添加品种 <span class="close" onclick="$('addSymbolMask').style.display='none'">取消</span></div>
-      <div class="cat-tabs" id="addSymbolCats">
-        <!-- 动态生成分类 Tab -->
-      </div>
-      <div class="modalBody" id="addSymbolList" style="padding:0; overflow-y: auto; height: calc(100% - 100px);">
-        <!-- 动态生成品种列表 -->
-      </div>
+      <div class="cat-tabs" id="addSymbolCats"></div>
+      <div class="modalBody" id="addSymbolList" style="padding:0; overflow-y: auto; height: calc(100% - 100px);"></div>
     </div>
   </div>
 
@@ -1785,7 +1495,9 @@ HTML_TEMPLATE = r"""<!doctype html>
       lots: 0.11,
       orderType: 'market',
       pendingSide: '',
-      currentModifyTicket: null
+      currentModifyTicket: null,
+      currentModifySymbol: null,
+      currentModifyLots: 0
     };
     let quoteInterval = null;
     let quizAnswers = {};
@@ -1795,9 +1507,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       return parseFloat(n).toFixed(d);
     }
 
-    // 按品种名精确计算小数位数（与参考程序 dg() 对齐）
     function calcDigits(price, sym) {
-      // 如果传了品种名，优先按品种规则
       if (sym) {
         const u = sym.toUpperCase();
         if (["XAUUSD","XAGUSD","UKOUSD","USOUSD"].includes(u))  return 2;
@@ -1806,12 +1516,10 @@ HTML_TEMPLATE = r"""<!doctype html>
         if (["DOGUSD","ADAUSD","RPLUSD","XSIUSD","LNKUSD"].includes(u)) return 5;
         if (["LTCUSD","SOLUSD","BCHUSD","XMRUSD","BNBUSD","AVEUSD","DSHUSD"].includes(u)) return 2;
         if (["U30USD","NASUSD","SPXUSD","100GBP","D30EUR","E50EUR","H33HKD"].includes(u)) return 1;
-        // 外汇判断：包含主要货币后缀且不是上面特殊品种
         const fx = ["USD","GBP","EUR","JPY","CHF","AUD","NZD","CAD","HKD","SGD","CNH"];
         if (fx.some(c => u.includes(c) && !["BTCUSD","ETHUSD"].includes(u))) return 5;
-        return 2;  // 股票等其他
+        return 2;
       }
-      // 无品种名时按价格数值兜底
       const p = parseFloat(price);
       if (isNaN(p) || p <= 0) return 4;
       if (p < 10)   return 5;
@@ -1821,116 +1529,113 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     const categoryPairs = {
       'Forex': [
-        { name: 'USDCHF', desc: 'US Dollar vs Swiss Franc', price: 0.8840, spread: 5, low: 0.8800, high: 0.8900 },
-        { name: 'GBPUSD', desc: 'Great Britain Pound vs US Dollar', price: 1.2640, spread: 8, low: 1.2600, high: 1.2680 },
-        { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
-        { name: 'USDJPY', desc: 'US Dollar vs Japanese Yen', price: 149.50, spread: 7, low: 149.00, high: 150.00 },
-        { name: 'USDCAD', desc: 'US Dollar vs Canadian Dollar', price: 1.3580, spread: 6, low: 1.3500, high: 1.3600 },
-        { name: 'AUDUSD', desc: 'Australian Dollar vs US Dollar', price: 0.6520, spread: 5, low: 0.6500, high: 0.6550 },
-        { name: 'EURGBP', desc: 'Euro vs Great Britain Pound', price: 0.8580, spread: 6, low: 0.8550, high: 0.8600 },
-        { name: 'EURAUD', desc: 'Euro vs Australian Dollar', price: 1.6533, spread: 10, low: 1.6500, high: 1.6600 },
-        { name: 'EURCHF', desc: 'Euro vs Swiss Franc', price: 0.9050, spread: 7, low: 0.9000, high: 0.9100 },
-        { name: 'EURJPY', desc: 'Euro vs Japanese Yen', price: 162.74, spread: 9, low: 162.00, high: 163.00 },
-        { name: 'GBPCHF', desc: 'Great Britain Pound vs Swiss Franc', price: 1.0418, spread: 12, low: 1.0400, high: 1.0500 },
-        { name: 'CADJPY', desc: 'Canadian Dollar vs Japanese Yen', price: 115.48, spread: 10, low: 115.00, high: 116.00 },
-        { name: 'GBPJPY', desc: 'Great Britain Pound vs Japanese Yen', price: 210.35, spread: 15, low: 210.00, high: 211.00 },
-        { name: 'AUDNZD', desc: 'Australian Dollar vs New Zealand Dollar', price: 1.1918, spread: 8, low: 1.1900, high: 1.2000 },
-        { name: 'AUDCAD', desc: 'Australian Dollar vs Canadian Dollar', price: 0.9568, spread: 8, low: 0.9500, high: 0.9600 },
-        { name: 'AUDCHF', desc: 'Australian Dollar vs Swiss Franc', price: 0.5473, spread: 10, low: 0.5400, high: 0.5500 },
-        { name: 'AUDJPY', desc: 'Australian Dollar vs Japanese Yen', price: 110.51, spread: 10, low: 110.00, high: 111.00 },
-        { name: 'CHFJPY', desc: 'Swiss Franc vs Japanese Yen', price: 201.88, spread: 12, low: 201.00, high: 202.00 },
-        { name: 'EURNZD', desc: 'Euro vs New Zealand Dollar', price: 1.9707, spread: 15, low: 1.9600, high: 1.9800 },
-        { name: 'EURCAD', desc: 'Euro vs Canadian Dollar', price: 1.5822, spread: 12, low: 1.5800, high: 1.5900 },
-        { name: 'CADCHF', desc: 'Canadian Dollar vs Swiss Franc', price: 0.5719, spread: 10, low: 0.5700, high: 0.5800 },
-        { name: 'NZDJPY', desc: 'New Zealand Dollar vs Japanese Yen', price: 92.71, spread: 10, low: 92.00, high: 93.00 },
-        { name: 'NZDUSD', desc: 'New Zealand Dollar vs US Dollar', price: 0.5872, spread: 6, low: 0.5800, high: 0.5900 },
-        { name: 'GBPAUD', desc: 'Great Britain Pound vs Australian Dollar', price: 1.9032, spread: 15, low: 1.9000, high: 1.9100 },
-        { name: 'GBPCAD', desc: 'Great Britain Pound vs Canadian Dollar', price: 1.8213, spread: 15, low: 1.8200, high: 1.8300 },
-        { name: 'GBPNZD', desc: 'Great Britain Pound vs New Zealand Dollar', price: 2.2686, spread: 20, low: 2.2600, high: 2.2800 },
-        { name: 'NZDCAD', desc: 'New Zealand Dollar vs Canadian Dollar', price: 0.8027, spread: 10, low: 0.8000, high: 0.8100 },
-        { name: 'NZDCHF', desc: 'New Zealand Dollar vs Swiss Franc', price: 0.4591, spread: 12, low: 0.4500, high: 0.4600 },
-        { name: 'USDSGD', desc: 'US Dollar vs Singapore Dollar', price: 1.2805, spread: 10, low: 1.2800, high: 1.2900 },
-        { name: 'USDHKD', desc: 'US Dollar vs Hong Kong Dollar', price: 7.8190, spread: 5, low: 7.8100, high: 7.8300 },
-        { name: 'USDCNH', desc: 'US Dollar vs Chinese Yuan', price: 6.9147, spread: 20, low: 6.9000, high: 6.9500 }
+        { name: 'USDCHF', desc: 'US Dollar vs Swiss Franc', price: 0.8840 },
+        { name: 'GBPUSD', desc: 'Great Britain Pound vs US Dollar', price: 1.2640 },
+        { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561 },
+        { name: 'USDJPY', desc: 'US Dollar vs Japanese Yen', price: 149.50 },
+        { name: 'USDCAD', desc: 'US Dollar vs Canadian Dollar', price: 1.3580 },
+        { name: 'AUDUSD', desc: 'Australian Dollar vs US Dollar', price: 0.6520 },
+        { name: 'EURGBP', desc: 'Euro vs Great Britain Pound', price: 0.8580 },
+        { name: 'EURAUD', desc: 'Euro vs Australian Dollar', price: 1.6533 },
+        { name: 'EURCHF', desc: 'Euro vs Swiss Franc', price: 0.9050 },
+        { name: 'EURJPY', desc: 'Euro vs Japanese Yen', price: 162.74 },
+        { name: 'GBPCHF', desc: 'Great Britain Pound vs Swiss Franc', price: 1.0418 },
+        { name: 'CADJPY', desc: 'Canadian Dollar vs Japanese Yen', price: 115.48 },
+        { name: 'GBPJPY', desc: 'Great Britain Pound vs Japanese Yen', price: 210.35 },
+        { name: 'AUDNZD', desc: 'Australian Dollar vs New Zealand Dollar', price: 1.1918 },
+        { name: 'AUDCAD', desc: 'Australian Dollar vs Canadian Dollar', price: 0.9568 },
+        { name: 'AUDCHF', desc: 'Australian Dollar vs Swiss Franc', price: 0.5473 },
+        { name: 'AUDJPY', desc: 'Australian Dollar vs Japanese Yen', price: 110.51 },
+        { name: 'CHFJPY', desc: 'Swiss Franc vs Japanese Yen', price: 201.88 },
+        { name: 'EURNZD', desc: 'Euro vs New Zealand Dollar', price: 1.9707 },
+        { name: 'EURCAD', desc: 'Euro vs Canadian Dollar', price: 1.5822 },
+        { name: 'CADCHF', desc: 'Canadian Dollar vs Swiss Franc', price: 0.5719 },
+        { name: 'NZDJPY', desc: 'New Zealand Dollar vs Japanese Yen', price: 92.71 },
+        { name: 'NZDUSD', desc: 'New Zealand Dollar vs US Dollar', price: 0.5872 },
+        { name: 'GBPAUD', desc: 'Great Britain Pound vs Australian Dollar', price: 1.9032 },
+        { name: 'GBPCAD', desc: 'Great Britain Pound vs Canadian Dollar', price: 1.8213 },
+        { name: 'GBPNZD', desc: 'Great Britain Pound vs New Zealand Dollar', price: 2.2686 },
+        { name: 'NZDCAD', desc: 'New Zealand Dollar vs Canadian Dollar', price: 0.8027 },
+        { name: 'NZDCHF', desc: 'New Zealand Dollar vs Swiss Franc', price: 0.4591 },
+        { name: 'USDSGD', desc: 'US Dollar vs Singapore Dollar', price: 1.2805 },
+        { name: 'USDHKD', desc: 'US Dollar vs Hong Kong Dollar', price: 7.8190 },
+        { name: 'USDCNH', desc: 'US Dollar vs Chinese Yuan', price: 6.9147 }
       ],
       'Metals': [
-        { name: 'XAGUSD', desc: 'Spot Silver', price: 82.76, spread: 20, low: 82.00, high: 83.00 },
-        { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 }
+        { name: 'XAGUSD', desc: 'Spot Silver', price: 82.76 },
+        { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43 }
       ],
       'Indices': [
-        { name: 'U30USD', desc: 'Wall Street 30', price: 47836.1, spread: 28, low: 47000.0, high: 48000.0 },
-        { name: 'NASUSD', desc: 'US Tech 100', price: 24922.8, spread: 12, low: 24000.0, high: 25000.0 },
-        { name: 'SPXUSD', desc: 'US SPX 500', price: 6803.72, spread: 15, low: 6700.0, high: 6900.0 },
-        { name: '100GBP', desc: 'UK 100', price: 10428.9, spread: 10, low: 10400.0, high: 10500.0 },
-        { name: 'D30EUR', desc: 'Germany 30', price: 23822.2, spread: 10, low: 23000.0, high: 24000.0 },
-        { name: 'E50EUR', desc: 'Euro STOXX 50', price: 5773.4, spread: 8, low: 5700.0, high: 5800.0 },
-        { name: 'H33HKD', desc: 'Hong Kong 50', price: 25503.1, spread: 569, low: 24774.4, high: 25542.1 }
+        { name: 'U30USD', desc: 'Wall Street 30', price: 47836.1 },
+        { name: 'NASUSD', desc: 'US Tech 100', price: 24922.8 },
+        { name: 'SPXUSD', desc: 'US SPX 500', price: 6803.72 },
+        { name: '100GBP', desc: 'UK 100', price: 10428.9 },
+        { name: 'D30EUR', desc: 'Germany 30', price: 23822.2 },
+        { name: 'E50EUR', desc: 'Euro STOXX 50', price: 5773.4 },
+        { name: 'H33HKD', desc: 'Hong Kong 50', price: 25503.1 }
       ],
       'Commodities': [
-        { name: 'UKOUSD', desc: 'UK Brent Oil', price: 87.35, spread: 25, low: 86.00, high: 88.00 },
-        { name: 'USOUSD', desc: 'US Crude Oil', price: 84.29, spread: 24, low: 83.00, high: 85.00 }
+        { name: 'UKOUSD', desc: 'UK Brent Oil', price: 87.35 },
+        { name: 'USOUSD', desc: 'US Crude Oil', price: 84.29 }
       ],
       'Crypto': [
-        { name: 'BTCUSD', desc: 'Bitcoin', price: 70594, spread: 50, low: 69000, high: 71000 },
-        { name: 'BCHUSD', desc: 'Bitcoin Cash', price: 456.94, spread: 30, low: 450, high: 460 },
-        { name: 'RPLUSD', desc: 'Ripple', price: 1.4003, spread: 5, low: 1.35, high: 1.45 },
-        { name: 'LTCUSD', desc: 'Litecoin', price: 55.28, spread: 10, low: 50, high: 60 },
-        { name: 'ETHUSD', desc: 'Ethereum', price: 2061.8, spread: 15, low: 2000, high: 2100 },
-        { name: 'XMRUSD', desc: 'Monero', price: 357.28, spread: 20, low: 350, high: 360 },
-        { name: 'BNBUSD', desc: 'Binance Coin', price: 641.10, spread: 15, low: 630, high: 650 },
-        { name: 'SOLUSD', desc: 'Solana', price: 87.5, spread: 10, low: 85, high: 90 },
-        { name: 'LNKUSD', desc: 'Chainlink', price: 9.123, spread: 5, low: 9.00, high: 9.20 },
-        { name: 'XSIUSD', desc: 'Shiba Inu', price: 0.201, spread: 2, low: 0.19, high: 0.21 },
-        { name: 'DOGUSD', desc: 'Dogecoin', price: 0.0933, spread: 2, low: 0.09, high: 0.10 },
-        { name: 'ADAUSD', desc: 'Cardano', price: 0.2673, spread: 2, low: 0.25, high: 0.28 },
-        { name: 'AVEUSD', desc: 'Aave', price: 116.35, spread: 10, low: 110, high: 120 },
-        { name: 'DSHUSD', desc: 'Dash', price: 34.063, spread: 10, low: 30, high: 40 }
+        { name: 'BTCUSD', desc: 'Bitcoin', price: 70594 },
+        { name: 'BCHUSD', desc: 'Bitcoin Cash', price: 456.94 },
+        { name: 'RPLUSD', desc: 'Ripple', price: 1.4003 },
+        { name: 'LTCUSD', desc: 'Litecoin', price: 55.28 },
+        { name: 'ETHUSD', desc: 'Ethereum', price: 2061.8 },
+        { name: 'XMRUSD', desc: 'Monero', price: 357.28 },
+        { name: 'BNBUSD', desc: 'Binance Coin', price: 641.10 },
+        { name: 'SOLUSD', desc: 'Solana', price: 87.5 },
+        { name: 'LNKUSD', desc: 'Chainlink', price: 9.123 },
+        { name: 'XSIUSD', desc: 'Shiba Inu', price: 0.201 },
+        { name: 'DOGUSD', desc: 'Dogecoin', price: 0.0933 },
+        { name: 'ADAUSD', desc: 'Cardano', price: 0.2673 },
+        { name: 'AVEUSD', desc: 'Aave', price: 116.35 },
+        { name: 'DSHUSD', desc: 'Dash', price: 34.063 }
       ],
       'Stocks': [
-        { name: 'AAPL', desc: 'Apple Inc', price: 260.39, spread: 10, low: 255, high: 265 },
-        { name: 'AMZN', desc: 'Amazon.com', price: 218.76, spread: 10, low: 215, high: 220 },
-        { name: 'BABA', desc: 'Alibaba Group', price: 130.22, spread: 15, low: 125, high: 135 },
-        { name: 'GOOGL', desc: 'Alphabet Inc', price: 301.18, spread: 12, low: 295, high: 305 },
-        { name: 'META', desc: 'Meta Platforms', price: 660.93, spread: 15, low: 650, high: 670 },
-        { name: 'MSFT', desc: 'Microsoft Corp', price: 410.64, spread: 15, low: 400, high: 415 },
-        { name: 'NFLX', desc: 'Netflix Inc', price: 99.14, spread: 8, low: 95, high: 105 },
-        { name: 'NVDA', desc: 'NVIDIA Corp', price: 178.51, spread: 12, low: 170, high: 185 },
-        { name: 'TSLA', desc: 'Tesla Inc', price: 405.46, spread: 15, low: 400, high: 410 },
-        { name: 'ABBV', desc: 'AbbVie Inc', price: 232.09, spread: 10, low: 230, high: 235 },
-        { name: 'ABNB', desc: 'Airbnb Inc', price: 135.71, spread: 10, low: 130, high: 140 },
-        { name: 'ABT', desc: 'Abbott Laboratories', price: 110.86, spread: 8, low: 108, high: 112 },
-        { name: 'ADBE', desc: 'Adobe Inc', price: 281.64, spread: 12, low: 280, high: 285 },
-        { name: 'AMD', desc: 'Advanced Micro Devices', price: 198.97, spread: 10, low: 195, high: 200 },
-        { name: 'AVGO', desc: 'Broadcom Inc', price: 332.70, spread: 15, low: 330, high: 335 },
-        { name: 'C', desc: 'Citigroup Inc', price: 108.86, spread: 8, low: 105, high: 110 },
-        { name: 'CRM', desc: 'Salesforce Inc', price: 201.29, spread: 10, low: 200, high: 205 },
-        { name: 'DIS', desc: 'Walt Disney Co', price: 102.35, spread: 8, low: 100, high: 105 },
-        { name: 'GS', desc: 'Goldman Sachs', price: 835.15, spread: 20, low: 830, high: 840 },
-        { name: 'INTC', desc: 'Intel Corp', price: 45.80, spread: 5, low: 45, high: 47 },
-        { name: 'JNJ', desc: 'Johnson & Johnson', price: 239.52, spread: 10, low: 235, high: 240 },
-        { name: 'MA', desc: 'Mastercard Inc', price: 524.28, spread: 15, low: 520, high: 530 },
-        { name: 'MCD', desc: 'McDonalds Corp', price: 327.32, spread: 12, low: 325, high: 330 },
-        { name: 'KO', desc: 'Coca-Cola Co', price: 76.91, spread: 5, low: 75, high: 78 },
-        { name: 'MMM', desc: '3M Co', price: 156.12, spread: 8, low: 155, high: 158 },
-        { name: 'NIO', desc: 'NIO Inc', price: 4.56, spread: 2, low: 4.50, high: 4.60 },
-        { name: 'PLTR', desc: 'Palantir Tech', price: 152.50, spread: 10, low: 150, high: 155 },
-        { name: 'SHOP', desc: 'Shopify Inc', price: 134.68, spread: 10, low: 130, high: 140 },
-        { name: 'TSM', desc: 'Taiwan Semiconductor', price: 344.40, spread: 15, low: 340, high: 350 },
-        { name: 'V', desc: 'Visa Inc', price: 319.47, spread: 12, low: 315, high: 325 }
+        { name: 'AAPL', desc: 'Apple Inc', price: 260.39 },
+        { name: 'AMZN', desc: 'Amazon.com', price: 218.76 },
+        { name: 'BABA', desc: 'Alibaba Group', price: 130.22 },
+        { name: 'GOOGL', desc: 'Alphabet Inc', price: 301.18 },
+        { name: 'META', desc: 'Meta Platforms', price: 660.93 },
+        { name: 'MSFT', desc: 'Microsoft Corp', price: 410.64 },
+        { name: 'NFLX', desc: 'Netflix Inc', price: 99.14 },
+        { name: 'NVDA', desc: 'NVIDIA Corp', price: 178.51 },
+        { name: 'TSLA', desc: 'Tesla Inc', price: 405.46 },
+        { name: 'ABBV', desc: 'AbbVie Inc', price: 232.09 },
+        { name: 'ABNB', desc: 'Airbnb Inc', price: 135.71 },
+        { name: 'ABT', desc: 'Abbott Laboratories', price: 110.86 },
+        { name: 'ADBE', desc: 'Adobe Inc', price: 281.64 },
+        { name: 'AMD', desc: 'Advanced Micro Devices', price: 198.97 },
+        { name: 'AVGO', desc: 'Broadcom Inc', price: 332.70 },
+        { name: 'C', desc: 'Citigroup Inc', price: 108.86 },
+        { name: 'CRM', desc: 'Salesforce Inc', price: 201.29 },
+        { name: 'DIS', desc: 'Walt Disney Co', price: 102.35 },
+        { name: 'GS', desc: 'Goldman Sachs', price: 835.15 },
+        { name: 'INTC', desc: 'Intel Corp', price: 45.80 },
+        { name: 'JNJ', desc: 'Johnson & Johnson', price: 239.52 },
+        { name: 'MA', desc: 'Mastercard Inc', price: 524.28 },
+        { name: 'MCD', desc: 'McDonalds Corp', price: 327.32 },
+        { name: 'KO', desc: 'Coca-Cola Co', price: 76.91 },
+        { name: 'MMM', desc: '3M Co', price: 156.12 },
+        { name: 'NIO', desc: 'NIO Inc', price: 4.56 },
+        { name: 'PLTR', desc: 'Palantir Tech', price: 152.50 },
+        { name: 'SHOP', desc: 'Shopify Inc', price: 134.68 },
+        { name: 'TSM', desc: 'Taiwan Semiconductor', price: 344.40 },
+        { name: 'V', desc: 'Visa Inc', price: 319.47 }
       ]
     };
     
-    // 扁平化所有可用的大类列表，供内部查询
     const allAvailablePairs = Object.values(categoryPairs).flat();
 
-    // 初始化收藏列表 (从 localStorage 读取)
     let savedQuotes = [];
     try {
         const stored = localStorage.getItem('mt4_saved_quotes');
         if (stored) {
             savedQuotes = JSON.parse(stored);
         } else {
-            // 默认收藏
             savedQuotes = ['D30EUR', 'NASUSD', 'U30USD', 'XAUUSD', 'EURUSD', 'USOUSD', 'H33HKD'];
             localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
         }
@@ -1940,7 +1645,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     
     let isEditMode = false;
 
-    // 东八区实时时钟 -- 独立 IIFE，不受其他 JS 错误影响
     (function() {
       function tickClock() {
         var el = document.getElementById('liveClock');
@@ -1963,9 +1667,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     function renderQuotes() {
       let html = '';
       const displayPairs = allAvailablePairs.filter(p => savedQuotes.includes(p.name));
-      
       displayPairs.forEach(p => {
-        const digits = (p.name === 'EURUSD' || p.name.endsWith('USD') && p.price < 100) ? 4 : 2;
         html += `
         <div class="q-row ${isEditMode ? 'edit-mode' : ''}" onclick="${isEditMode ? '' : `selectSymbol('${p.name}', '${p.desc}')`}">
           <div class="q-delete-btn" onclick="removeQuote('${p.name}', event)">⊖</div>
@@ -2004,7 +1706,6 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     window.openAddSymbol = function() {
         renderAddSymbolCats();
-        // 默认选中第一个分类
         renderAddSymbolList(Object.keys(categoryPairs)[0]);
         $('addSymbolMask').style.display = 'flex';
     };
@@ -2048,8 +1749,8 @@ HTML_TEMPLATE = r"""<!doctype html>
             localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
             btnEl.innerHTML = '✓';
             btnEl.classList.add('added');
-            btnEl.onclick = null; // 移除点击事件
-            renderQuotes(); // 更新主页面列表
+            btnEl.onclick = null;
+            renderQuotes();
         }
     };
 
@@ -2059,18 +1760,14 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('tab-' + tabId).classList.add('active');
       el.classList.add('active');
       $('topBarTitle').innerText = title;
-      _activeTab = tabId;  // 记录当前激活 tab，供 refreshData 感知
-
-      // 切换到历史 tab 时立即拉一次最新记录
+      _activeTab = tabId;
       if(tabId === 'history') fetchHistoryTrades();
-      // 切换到持仓 tab 时立即刷一次持仓（平仓后切回能立刻看到结果）
       if(tabId === 'positions') refreshData();
     };
 
     window.selectSymbol = function(name, desc) {
       $('tradeSym').innerText = name;
       if (desc) $('tradeSymDesc').innerText = desc;
-      // 价格等后端返回后再显示，先清空
       $('tBid').innerText = '--';
       $('tAsk').innerText = '--';
       window.quantState.price = 0;
@@ -2112,7 +1809,6 @@ HTML_TEMPLATE = r"""<!doctype html>
       window.quantState.pendingSide = pendingSide;
       $('orderTypeText').innerText = typeName;
       $('orderTypeMask').style.display = 'none';
-      
       if (typeCode === 'market') {
         $('rowPrice').style.display = 'none';
         $('actionMarket').style.display = 'flex';
@@ -2146,34 +1842,44 @@ HTML_TEMPLATE = r"""<!doctype html>
       quizAnswers[qIndex] = answer;
     };
 
+    // ★ FIX #3: 修复 confirmOrderAfterQuiz — 去掉 marginPct=0 硬编码，
+    //    直接读取手数输入框，确保 lots 正确传递，不再走断裂的 marginPct 计算链路
     window.confirmOrderAfterQuiz = function() {
       if(Object.keys(quizAnswers).length < 2) return alert('请先完成风控检查！');
       $('quizMask').style.display = 'none';
       
-      const lotsToSend = parseFloat($('inpLots').value) || 0.01;
+      // ★ 直接从输入框读取手数，保证不为 0
+      const lotsToSend = Math.max(parseFloat($('inpLots').value) || 0.01, 0.01);
+
       const params = {
           inpPrice: parseFloat($('inpPrice').value) || 0,
-          inpTp: parseFloat($('inpTp').value) || 0,
-          inpSl: parseFloat($('inpSl').value) || 0,
-          inpTTL: parseFloat($('inpTTL').value) || 0
+          inpTp:    parseFloat($('inpTp').value)    || 0,
+          inpSl:    parseFloat($('inpSl').value)    || 0,
+          inpTTL:   parseFloat($('inpTTL').value)   || 0
       };
       
       window.API.submitOrder(
         $('tradeSym').innerText, 
         window.quantState.pendingSide, 
-        window.quantState.orderType, 
-        0, 20, lotsToSend, params
+        window.quantState.orderType,
+        0,            // marginPct 不使用，统一走 lots 路径
+        20, 
+        lotsToSend,   // ★ 确保 lots 正确传递
+        params
       ).then(res => {
-        if(res.success) {
+        if(res && res.success) {
           const sideType = (window.quantState.pendingSide||'').toLowerCase() === 'sell' ? 'sell' : 'buy';
           showSuccess(sideType);
           refreshData();
+        } else {
+          alert('发送失败: ' + ((res && res.message) || '请检查网络或重试'));
         }
-        else alert('发送失败: ' + (res.message || '请检查网络或重试'));
+      }).catch(e => {
+        alert('网络错误，请重试');
+        console.error(e);
       });
     };
 
-    // --- Backend API Wrappers ---
     window.API = {
       submitOrder: async function(symbol, side, type, marginPct, leverage, lots, params) {
         try {
@@ -2196,50 +1902,39 @@ HTML_TEMPLATE = r"""<!doctype html>
       cancelCommand: async function(id) { alert("暂不支持前端撤单"); }
     };
 
-    // ======= 行情列表全量刷新（每1.5s） =======
     async function refreshAllQuotes() {
       try {
         const res = await fetch('/api/all_quotes');
         if (!res.ok) return;
-        const quotes = await res.json();   // { "XAUUSD": {bid, ask, spread, ts}, ... }
-
+        const quotes = await res.json();
         for (const [sym, q] of Object.entries(quotes)) {
           const bidEl    = $('q_bid_'    + sym);
           const askEl    = $('q_ask_'    + sym);
           const spreadEl = $('q_spread_' + sym);
           const timeEl   = $('q_time_'   + sym);
-
-          if (!bidEl) continue;   // 该品种不在当前行情列表中
-
-          // parseFloat 保证类型正确（EA 可能以字符串形式上报价格）
+          if (!bidEl) continue;
           const bid = parseFloat(q.bid);
           const ask = parseFloat(q.ask);
           const digits = calcDigits(bid, sym);
-
           bidEl.innerText = isNaN(bid) ? '--' : bid.toFixed(digits);
           askEl.innerText = isNaN(ask) ? '--' : ask.toFixed(digits);
           if (spreadEl) spreadEl.innerText = q.spread != null ? '点差: ' + q.spread : '点差: --';
           if (timeEl)   timeEl.innerText   = q.ts ? new Date(q.ts * 1000).toLocaleTimeString('en-US', {hour12:false}) : '--';
         }
-      } catch(e) { /* 静默失败，不影响其他功能 */ }
+      } catch(e) {}
     }
 
-    // ======= 成功反馈动画 =======
     let _successTimer = null;
     function showSuccess(type) {
-      // type: 'buy' | 'sell' | 'close'
       const overlay = $('successOverlay');
       const label   = $('successLabel');
       const sub     = $('successSub');
       const ring    = $('ringProgress');
       const tick    = $('successTick');
-
-      // 重置动画（强制 reflow）
       overlay.classList.remove('show');
       ring.classList.remove('buy-ring','close-ring');
       tick.classList.remove('buy-tick','close-tick');
-      void overlay.offsetWidth; // reflow
-
+      void overlay.offsetWidth;
       if (type === 'close') {
         label.innerText = '平仓成功';
         sub.innerText   = '平仓指令已发送至 MT4';
@@ -2256,9 +1951,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         ring.classList.add('buy-ring');
         tick.classList.add('buy-tick');
       }
-
       overlay.classList.add('show');
-
       clearTimeout(_successTimer);
       _successTimer = setTimeout(hideSuccess, 1800);
     }
@@ -2268,7 +1961,6 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('successOverlay').classList.remove('show');
     }
 
-    // 当前激活的 tab 名称（quotes / trade / positions / history）
     let _activeTab = 'quotes';
 
     async function refreshData() {
@@ -2280,7 +1972,6 @@ HTML_TEMPLATE = r"""<!doctype html>
                 return;
             }
             const data = await res.json();
-
             const hasData = data && (data.balance !== undefined || data.equity !== undefined);
             if(hasData) {
                 $('valBalance').innerText    = fmtNum(data.balance, 2);
@@ -2291,7 +1982,6 @@ HTML_TEMPLATE = r"""<!doctype html>
             } else {
                 ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
             }
-
             if(data) {
                 if(data.latest_quote) {
                     const bid = parseFloat(data.latest_quote.bid);
@@ -2303,28 +1993,22 @@ HTML_TEMPLATE = r"""<!doctype html>
                     if($('q_bid_'+sym)) $('q_bid_'+sym).innerText = isNaN(bid) ? '--' : bid.toFixed(dg);
                     if($('q_ask_'+sym)) $('q_ask_'+sym).innerText = isNaN(ask) ? '--' : ask.toFixed(dg);
                 }
-                // 持仓始终刷新（平仓后需要及时消失）
                 updatePositionsList(data.positions || []);
-
                 const pendingRes = await fetch('/api/pending_commands');
                 if(pendingRes.ok) {
                     const pendingData = await pendingRes.json();
                     updatePendingOrdersList(pendingData.commands || []);
                 }
-
-                // 历史 tab 激活时自动同步最新记录
                 if(_activeTab === 'history') fetchHistoryTrades();
             }
         } catch(e) {
             ['valBalance','valEquity','valFreeMargin','valHistBalance','valProfit'].forEach(id => { if($(id)) $(id).innerText = ''; });
-            console.error("Refresh Error:", e);
         }
     }
 
     function updatePositionsList(positions) {
         let html = '';
         (positions || []).forEach(pos => {
-            // Bug Fix #1: null safety — pos.side/open_price/current_price 均可能缺失
             const side = (pos.side || '').toLowerCase();
             const isBuy = side === 'buy';
             const sym   = pos.symbol || '';
@@ -2335,7 +2019,6 @@ HTML_TEMPLATE = r"""<!doctype html>
             const tp     = pos.tp   != null ? pos.tp   : 0;
             const sl     = pos.sl   != null ? pos.sl   : 0;
             const lots   = pos.lots != null ? pos.lots : 0;
-            
             html += `
             <div class="pos-item" onclick="openModifyOrder('${ticket}', '${tp}', '${sl}', '${sym}', '${lots}')">
               <div class="p-row1">
@@ -2383,8 +2066,6 @@ HTML_TEMPLATE = r"""<!doctype html>
         let html = '';
         trades.forEach(t => {
             if(String(t.cmd_id).startsWith('q_')) return;
-
-            // —— 尝试从 message 字段补齐缺失信息 ——
             let msgExtra = {};
             try {
                 const raw = t.message || '';
@@ -2397,7 +2078,6 @@ HTML_TEMPLATE = r"""<!doctype html>
                 }
                 return null;
             };
-
             const sym        = pick('symbol') || '--';
             const side       = (pick('side','type','action') || '').toLowerCase();
             const vol        = pick('volume','lots');
@@ -2407,12 +2087,8 @@ HTML_TEMPLATE = r"""<!doctype html>
             const profit     = pick('profit','pnl');
             const ticket     = pick('ticket');
             const ok         = t.ok;
-
-            // 方向徽章
             const sideLabel  = side === 'buy' ? 'BUY' : side === 'sell' ? 'SELL' : side.toUpperCase() || '?';
             const sideCls    = (side === 'buy') ? 'buy' : (side === 'sell') ? 'sell' : 'ok';
-
-            // 盈亏颜色
             let profitHtml = '--';
             if(profit != null){
                 const pNum   = parseFloat(profit);
@@ -2420,25 +2096,20 @@ HTML_TEMPLATE = r"""<!doctype html>
                 const pSign  = pNum > 0 ? '+' : '';
                 profitHtml   = `<span class="h-profit ${pCls}">${pSign}${pNum.toFixed(2)}</span>`;
             }
-
-            // 时间格式化
             const fmtTime = (ts) => {
                 if(!ts) return '--';
                 const n = typeof ts === 'number' ? ts : parseInt(ts);
-                if(isNaN(n)) return String(ts);  // 可能已经是字符串格式
+                if(isNaN(n)) return String(ts);
                 return new Date(n < 1e12 ? n*1000 : n).toLocaleString('zh-CN', {
                     month:'2-digit', day:'2-digit',
                     hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
                 });
             };
-
-            // 价格格式化
             const fmtP = (p) => {
                 if(p == null) return '--';
                 const n = parseFloat(p);
                 return isNaN(n) ? '--' : n.toFixed(n >= 100 ? 2 : 4);
             };
-
             html += `
             <div class="h-card">
               <div class="h-row1">
@@ -2465,17 +2136,19 @@ HTML_TEMPLATE = r"""<!doctype html>
         $('list-history').innerHTML = html || '<div style="padding:15px;text-align:center;color:#888;">暂无记录</div>';
     }
 
+    // ★ FIX #1: openModifyOrder — 确保 lots 正确存储，支持字符串和数字
     window.openModifyOrder = function(ticket, tp, sl, symbol, lots) {
         window.quantState.currentModifyTicket = ticket;
         window.quantState.currentModifySymbol = symbol;
-        window.quantState.currentModifyLots = parseFloat(lots) || 0;
+        // ★ 确保 lots 转为数字，0 时用输入框值兜底
+        const parsedLots = parseFloat(lots);
+        window.quantState.currentModifyLots = isNaN(parsedLots) ? 0 : parsedLots;
         $('modTpPrice').value = tp && tp !== 'undefined' && tp !== '0' ? tp : '';
         $('modSlPrice').value = sl && sl !== 'undefined' && sl !== '0' ? sl : '';
         $('modifyMask').style.display = 'flex';
     };
 
     window.submitModifyOrder = function() {
-        // Bug Fix #2: currentModifyTicket 为 null 时给明确提示，不静默吞命令
         if(!window.quantState.currentModifyTicket) {
             alert('未选中持仓，请先点击持仓行');
             return;
@@ -2484,26 +2157,38 @@ HTML_TEMPLATE = r"""<!doctype html>
         const sl = parseFloat($('modSlPrice').value) || 0;
         window.API.modifyPosition(window.quantState.currentModifyTicket, tp, sl)
         .then(res => {
-            if(res.success) { showSuccess('buy'); $('modifyMask').style.display='none'; refreshData(); }
-            else alert('修改失败: ' + (res.message || '请检查网络或重试'));
+            if(res && res.success) { showSuccess('buy'); $('modifyMask').style.display='none'; refreshData(); }
+            else alert('修改失败: ' + ((res && res.message) || '请检查网络或重试'));
         });
     };
     
+    // ★ FIX #1: closePosition — lots=0 时从手数输入框兜底，确保平仓命令有效
     window.closePosition = function() {
-        // Bug Fix #3: currentModifyTicket 为 null 时给明确提示
         if(!window.quantState.currentModifyTicket) {
             alert('未选中持仓，请先点击持仓行');
             return;
         }
-        const sym   = window.quantState.currentModifySymbol || $('tradeSym').innerText;
-        const lots  = window.quantState.currentModifyLots  || 0;
+        const sym    = window.quantState.currentModifySymbol || $('tradeSym').innerText;
         const ticket = window.quantState.currentModifyTicket;
-        window.API.submitOrder(sym, 'CLOSE', 'market', 0, 20, lots, {ticket: ticket})
+        // ★ lots=0 或未设置时，fallback 到手数输入框，确保不传 0
+        const lots = window.quantState.currentModifyLots > 0
+                     ? window.quantState.currentModifyLots
+                     : (parseFloat($('inpLots').value) || 0.01);
+
+        window.API.submitOrder(sym, 'CLOSE', 'market', 0, 20, lots, { ticket: ticket })
         .then(res => {
-            if(res.success) { showSuccess('close'); $('modifyMask').style.display='none'; refreshData(); }
-            else alert('平仓失败: ' + (res.message || '请检查网络或重试'));
+            if(res && res.success) {
+                showSuccess('close');
+                $('modifyMask').style.display = 'none';
+                refreshData();
+            } else {
+                alert('平仓失败: ' + ((res && res.message) || '请检查网络或重试'));
+            }
+        }).catch(e => {
+            alert('网络错误，请重试');
+            console.error(e);
         });
-    }
+    };
 
     // ======================== K线绘制引擎 ========================
     let _kBars = [], _kTF = '5min', _kSym = 'XAUUSD', _kL = null;
@@ -2575,7 +2260,6 @@ HTML_TEMPLATE = r"""<!doctype html>
 
       const G = '#34c759', R = '#ff3b30', gridC = 'rgba(0,0,0,0.05)', axC = '#8e8e93';
 
-      // Y轴网格
       ctx.font = '10px "SF Mono",Menlo,monospace';
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       for (const t of tks) {
@@ -2586,7 +2270,6 @@ HTML_TEMPLATE = r"""<!doctype html>
         ctx.fillStyle = axC; ctx.fillText(t.toFixed(D), PL + cW + 6, y);
       }
 
-      // 烛台
       for (let i = 0; i < n; i++) {
         const b = vb[i], o = b[1], hi = b[2], lo = b[3], cl = b[4];
         const up = cl >= o, col = up ? G : R, x = bx(i);
@@ -2601,7 +2284,6 @@ HTML_TEMPLATE = r"""<!doctype html>
         ctx.fillRect(Math.round(x - hB), Math.round(bt), bW, Math.max(1, bb - bt));
       }
 
-      // 最新价虚线
       if (n > 0) {
         const lc = vb[n-1][4], up = lc >= vb[n-1][1], col = up ? G : R;
         const yL = p2y(lc);
@@ -2616,10 +2298,8 @@ HTML_TEMPLATE = r"""<!doctype html>
         ctx.fillText(lc.toFixed(D), tX + tW / 2, Math.round(yL));
       }
 
-      // X轴时间标签
       ctx.fillStyle = axC; ctx.font = '10px "SF Mono",Menlo,monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      const iMs = _kTF === '1hour' ? 4*3600000 : 3600000;
       let lX = -Infinity;
       for (let i = 0; i < n; i++) {
         const ts = vb[i][0], x = bx(i);
@@ -2630,7 +2310,6 @@ HTML_TEMPLATE = r"""<!doctype html>
           : String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0');
         ctx.fillStyle = axC; ctx.fillText(lb, x, PT + cH + 5); lX = x;
       }
-
       kClearCursor();
     }
 
@@ -2682,7 +2361,6 @@ HTML_TEMPLATE = r"""<!doctype html>
       }
     }
 
-    // 绑定十字光标事件
     (function() {
       const wr = $('klineWrap'); if (!wr) return;
       const pos = e => {
@@ -2697,22 +2375,18 @@ HTML_TEMPLATE = r"""<!doctype html>
       wr.addEventListener('touchend', kClearCursor);
     })();
 
-    // 切换品种时同步刷新 K 线
     const _origSelectSymbol = window.selectSymbol;
     window.selectSymbol = function(name, desc) {
       _origSelectSymbol(name, desc);
       kFetch();
     };
 
-    // resize 重绘
     window.addEventListener('resize', () => {
       clearTimeout(window._krt);
       window._krt = setTimeout(() => { if (_kBars.length) kDraw(_kBars); else kDrawEmpty(); }, 100);
     });
 
-    // 定时刷新 K 线（与 refreshData 同频）
     setInterval(kFetch, 1500);
-
   </script>
 </body>
 </html>"""
@@ -2727,26 +2401,20 @@ def index():
 def submit_order_v1():
     global cmd_counter
     
-    # 1. 基础时间限制 (0:00 - 5:00)
     if is_restricted_time():
         return jsonify({"success": False, "message": "非交易时段 (0:00-5:00)，禁止下单"}), 403
 
     data = request.json
-    print(f"【API】收到下单请求: {data}")
+    if not data:
+        return jsonify({"success": False, "message": "请求体为空或非 JSON"}), 400
+
     print(f"[ORDER] Recv: {json.dumps(data)}")
     
-    symbol = norm_symbol(data.get('symbol'))
+    symbol = norm_symbol(data.get('symbol', ''))
     side_raw = data.get('side', '')
     cmd_type_raw = data.get('type', 'market')
     
-    # 2. 风控状态检查 (熔断/冷静期)
-    # QUOTE 和 CLOSE (如果不是手动平锁定仓位) 是否受限? 
-    # QUOTE 不受限。CLOSE 受限吗? "超过就熔断，当日不再交易" -> 通常指不开新仓
-    # 但如果是平仓，应该是允许的，除非是锁定的仓位。
-    # 这里我们只限制 开仓 (MARKET/LIMIT)
-    
     if side_raw != 'QUOTE' and side_raw != 'CLOSE' and cmd_type_raw != 'quote':
-        # 获取账户信息用于风控检查
         account = None
         current_equity = 0
         day_start_equity = 0
@@ -2756,81 +2424,58 @@ def submit_order_v1():
                 account = norm_str(parsed.get("account"))
                 current_equity = parsed.get("equity", 0)
                 day_start_equity = parsed.get("day_start_equity", 0)
-        
         if account:
             allowed, msg, status_type = check_risk_status(account, current_equity, day_start_equity)
             if not allowed:
                 print(f"[RISK] Order rejected: {msg}")
                 return jsonify({"success": False, "message": msg, "risk_status": status_type}), 403
 
-    # 3. 锁定仓位检查 (针对 CLOSE)
     if side_raw == 'CLOSE':
-        ticket = str(data.get("ticket"))
+        ticket = str(data.get("ticket", ""))
         with risk_lock:
             if ticket in risk_state["locked_tickets"]:
                 return jsonify({"success": False, "message": "该仓位已锁定，禁止手动平仓"}), 403
 
-    # 优先放行 QUOTE 命令，无需计算 lots
+    # QUOTE 命令快速放行
     if side_raw == 'QUOTE' or cmd_type_raw == 'quote':
-        print(f"[ORDER][QUOTE] Processing for {symbol}")
-        # 构造简单命令对象
         now = int(time.time())
         cmd = {
-            "id": "q_" + generate_unique_cmd_id(), # 添加前缀以便过滤
+            "id": "q_" + generate_unique_cmd_id(),
             "nonce": generate_nonce(),
             "created_at": now,
-            "ttl_sec": 10, # quote 有效期短
+            "ttl_sec": 10,
             "symbol": symbol,
             "action": "quote",
-            "account": "" # 尝试填充
+            "account": ""
         }
-        
-        # 尝试填充 account
         with history_lock:
             if history_status and isinstance(history_status[0].get("parsed"), dict):
                 cmd["account"] = norm_str(history_status[0]["parsed"].get("account"))
-        
         with commands_lock:
             commands.append(cmd)
-            # cmd_counter 已经在 generate_unique_cmd_id 中增加
-            
-        print(f"[ORDER][QUOTE] queued id={cmd['id']}")
         return jsonify({"success": True, "message": "报价请求已发送", "order": cmd})
 
-    # 优先从 inpMarginUSD (滑块值) 计算 lots
-    inp_margin_usd = float(data.get('marginPct', 0) or 0) # 兼容前端字段 marginPct
+    # ★ FIX #3: lots 计算 — 不再依赖断裂的 marginPct 链路，直接用前端传的 lots
+    lots = float(data.get('lots', 0) or 0)
     
-    # 获取当前价格用于计算
-    current_price = get_latest_price(symbol) or float(data.get('price', 0) or 0)
-    
-    lots = 0.0
-    if inp_margin_usd > 0 and current_price > 0:
-        # 使用 calc_lots_from_margin_usd 统一计算
-        # 注意：这里构造一个伪造的 data 对象传给计算函数，因为它只需要 equity (可选) 和查价格
-        # 实际上 calc_lots_from_margin_usd 内部会再次查价格
-        lots = calc_lots_from_margin_usd(symbol, inp_margin_usd, {"equity": 0})
-        
-        # [修复]：如果算出来太小，尝试给个最小量（配合前端）
-        # 或者至少不要 round 成 0.0
-        if 0 < lots < 0.01:
-            lots = 0.01
-        else:
-            lots = round(lots, 2)
-    
-    # 如果计算失败或未提供 margin，尝试使用前端传的 lots (兼容旧逻辑)
-    if lots <= 0:
-        print(f"[ORDER] Calc lots failed or 0, fallback to frontend lots")
-        lots = float(data.get('lots', 0))
-    
-    if lots <= 0 and side_raw != 'CLOSE':
-        print(f"[ORDER][REJECT] Invalid lots: {lots}")
-        return jsonify({"success": False, "message": "计算手数无效，请检查投入金额或价格"}), 400
+    # 如果前端传了 marginPct 且有行情价格，才走 margin->lots 转换（可选路径）
+    inp_margin_usd = float(data.get('marginPct', 0) or 0)
+    if lots <= 0 and inp_margin_usd > 0:
+        current_price = get_latest_price(symbol) or float(data.get('price', 0) or 0)
+        if current_price > 0:
+            lots = calc_lots_from_margin_usd(symbol, inp_margin_usd, {"equity": 0})
+            if 0 < lots < 0.01:
+                lots = 0.01
+            else:
+                lots = round(lots, 2)
 
-    # 构造命令对象
+    # ★ FIX #3: lots 仍为 0 时使用最小手数兜底，不再直接拒绝（避免因价格未加载误杀正常下单）
+    if lots <= 0 and side_raw != 'CLOSE':
+        lots = 0.01
+        print(f"[ORDER][WARN] lots was 0 or missing, using minimum 0.01")
+
+    # 构造命令
     now = int(time.time())
-    
-    # 获取有效期 (分钟)，默认 10 分钟
-    # 修复：从 data 中获取 inpTTL
     ttl_mins = float(data.get('inpTTL', 0) or 0)
     if ttl_mins <= 0:
         ttl_mins = 10
@@ -2846,36 +2491,25 @@ def submit_order_v1():
         "lots": lots
     }
     
-    # 填充 account
     account = None
     with history_lock:
-        # 优先从 history_status 获取 (最近一次心跳)
         if history_status and isinstance(history_status[0].get("parsed"), dict):
             account = norm_str(history_status[0]["parsed"].get("account"))
-        
-        # 如果 history_status 为空，尝试从 history_report 获取 (可能是刚启动)
         if not account and history_report:
             for rep in history_report:
                 if rep.get("parsed") and rep["parsed"].get("account"):
                     account = norm_str(rep["parsed"].get("account"))
                     break
     
-    # 强制校验：如果依然无法获取 account，则禁止下单，防止生成无效命令
-    # 注意：某些情况下 history_status 可能为空（如 EA 尚未连接），此时允许 account 为空
-    # 但为了避免指令无法被 EA 认领，最好还是要求 account
     if not account:
-        print("[WARN] 无法获取当前账户信息 (account unknown)，尝试允许空账户下单")
-        # return jsonify({"success": False, "message": "无法获取当前账户信息，请等待 EA 连接"}), 400
-        account = "" # 允许为空
-    
+        print("[WARN] 无法获取当前账户信息，允许空账户下单")
+        account = ""
     cmd["account"] = account
 
-    # 判断类型
-    # type: "market", "limit", "market_tpsl", "limit_tpsl", "quote"
-    # 平仓逻辑特殊处理
+    # ★ FIX #1: 平仓命令补全 side/volume/lots 字段，EA 必需
     if side_raw == 'CLOSE':
         cmd["action"] = "close"
-        # Bug Fix #5: ticket 为 None 时 int() 会 TypeError -> 500
+        cmd["side"] = "close"       # ★ EA 识别平仓动作
         raw_ticket = data.get("ticket")
         if raw_ticket is None:
             return jsonify({"success": False, "message": "平仓指令缺少 ticket 字段"}), 400
@@ -2883,11 +2517,16 @@ def submit_order_v1():
             cmd["ticket"] = int(raw_ticket)
         except (ValueError, TypeError):
             return jsonify({"success": False, "message": f"ticket 格式无效: {raw_ticket}"}), 400
-    # QUOTE 已提前处理
+        # ★ 确保 lots > 0，0 会导致 EA 拒绝执行
+        close_lots = float(data.get('lots', 0) or 0)
+        if close_lots <= 0:
+            close_lots = 0.01
+            print(f"[ORDER][CLOSE][WARN] lots was 0, using 0.01 for ticket={cmd['ticket']}")
+        cmd["volume"] = close_lots
+        cmd["lots"]   = close_lots
     elif "limit" in cmd_type_raw:
         cmd["action"] = "limit"
         cmd["side"] = "buy" if side_raw.upper() == "BUY" else "sell"
-        # 获取价格
         price = float(data.get('inpPrice', 0) or 0)
         if price <= 0:
              return jsonify({"success": False, "message": "限价单必须输入触发价格"}), 400
@@ -2896,7 +2535,6 @@ def submit_order_v1():
         cmd["action"] = "market"
         cmd["side"] = "buy" if side_raw.upper() == "BUY" else "sell"
     
-    # TP/SL
     tp = float(data.get('inpTp', 0) or 0)
     sl = float(data.get('inpSl', 0) or 0)
     if tp > 0: cmd["tp"] = tp
@@ -2904,9 +2542,8 @@ def submit_order_v1():
     
     with commands_lock:
         commands.append(cmd)
-        # cmd_counter 已在 generate_unique_cmd_id 中增加
     
-    print(f"[ORDER][QUEUE] action={cmd.get('action')} symbol={symbol} lots={lots} account={account} id={cmd['id']}")
+    print(f"[ORDER][QUEUE] action={cmd.get('action')} side={cmd.get('side')} symbol={symbol} lots={lots} account={account} id={cmd['id']}")
     return jsonify({
         "success": True, 
         "message": "指令已发送到队列",
@@ -2916,9 +2553,10 @@ def submit_order_v1():
 @app.route('/api/v1/position/modify', methods=['POST'])
 def modify_position_v1():
     data = request.json
-    position_id = data.get('positionId') # Ticket
-    
-    # 锁定检查
+    if not data:
+        return jsonify({"success": False, "message": "请求体为空"}), 400
+
+    position_id = data.get('positionId')
     if position_id:
         with risk_lock:
             if str(position_id) in risk_state["locked_tickets"]:
@@ -2926,11 +2564,8 @@ def modify_position_v1():
 
     tp = float(data.get('tpPrice', 0) or 0)
     sl = float(data.get('slPrice', 0) or 0)
-    
-    # 构造 modify 命令
     now = int(time.time())
     
-    # Bug Fix #6: position_id 为 None 时 int() 会 TypeError -> 500
     if position_id is None:
         return jsonify({"success": False, "message": "修改指令缺少 positionId 字段"}), 400
     try:
@@ -2949,7 +2584,6 @@ def modify_position_v1():
         "sl": sl
     }
     
-    # 填充 account
     with history_lock:
         if history_status and isinstance(history_status[0].get("parsed"), dict):
             account = norm_str(history_status[0]["parsed"].get("account"))
@@ -2958,7 +2592,6 @@ def modify_position_v1():
 
     with commands_lock:
         commands.append(cmd)
-        # cmd_counter 已在 generate_unique_cmd_id 中增加
         
     return jsonify({"success": True, "message": "修改指令已发送"})
 
@@ -2966,12 +2599,7 @@ def modify_position_v1():
 def lock_position_v1():
     data = request.json
     position_id = data.get('positionId')
-    print(f"【API】执行锁仓(标记锁定): {position_id}")
-    
-    # 锁仓逻辑更新：不再反向开仓，而是标记为"Locked"，禁止手动操作
-    # 只有达到 TP/SL 才能结算
-    
-    # 1. 验证持仓是否存在
+    print(f"【API】执行锁仓: {position_id}")
     target_pos = None
     with history_lock:
         if history_positions and history_positions[0].get("parsed"):
@@ -2980,43 +2608,32 @@ def lock_position_v1():
                 if str(p.get("ticket")) == str(position_id):
                     target_pos = p
                     break
-    
     if not target_pos:
         return jsonify({"success": False, "message": "未找到持仓，无法锁仓"}), 404
-        
-    # 2. 标记锁定
     global risk_state
     with risk_lock:
         risk_state["locked_tickets"].add(str(position_id))
-        
     return jsonify({"success": True, "message": "仓位已锁定 (禁止手动平仓/修改，等待止盈止损结算)"})
 
 @app.route('/api/v1/calendar', methods=['GET'])
 def get_calendar_pnl_v1():
     year = request.args.get('year', type=int)
     month = request.args.get('month', type=int)
-    
     if not year or not month:
         now = datetime.now()
         year = now.year
         month = now.month
-
     with daily_stats_lock:
         stats = load_daily_stats()
-        
     data = {}
-    # 筛选指定年月的记录
     prefix = f"{year}-{month:02d}"
-    
     for date_str, pnl in stats.items():
         if date_str.startswith(prefix):
             try:
-                # 提取日期 (day)
                 day = int(date_str.split("-")[2])
                 data[day] = pnl
             except:
                 continue
-                
     return jsonify(data)
 
 # ==================== 旧版 echo ====================
@@ -3074,18 +2691,14 @@ def mt4_commands():
         remaining_commands = []
         for cmd in commands:
             cmd_acc = cmd.get("account")
-            # 兼容逻辑：account 为 None 或空字符串时，允许匹配（或视为广播命令）
             cmd_acc_normalized = norm_str(cmd_acc)
             request_acc_normalized = norm_str(account)
-            
-            # 如果请求的 account 为空，则返回所有不指定 account 的命令
             if request_acc_normalized == "":
                 if cmd_acc is None or cmd_acc_normalized == "":
                     account_commands.append(cmd)
                 else:
                     remaining_commands.append(cmd)
             else:
-                # 请求有 account：只返回匹配的或无 account 限制的命令
                 if cmd_acc is None or cmd_acc_normalized == "" or cmd_acc_normalized == request_acc_normalized:
                     account_commands.append(cmd)
                 else:
@@ -3099,11 +2712,9 @@ def mt4_commands():
 
     return jsonify({"commands": account_commands, "paused": current_paused}), 200
 
-# 获取当前待发送的指令队列 (供前端展示 "当前委托" 中的排队指令)
 @app.route("/api/pending_commands", methods=["GET"])
 def api_pending_commands():
     with commands_lock:
-        # 返回副本，避免并发问题，并过滤掉 quote 指令
         visible_commands = [c for c in commands if c.get("action") != "quote"]
         return jsonify({"commands": visible_commands})
 
@@ -3113,10 +2724,7 @@ def mt4_status():
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
     _, record = store_mt4_data(raw_body, client_ip, headers_dict)
-    
-    # 异步或同步更新日历统计
     update_daily_stats_from_record(record)
-    
     return "OK", 200
 
 @app.route("/web/api/mt4/positions", methods=["POST"])
@@ -3146,44 +2754,25 @@ def mt4_quote():
 # ==================== Tick 推送接口 ====================
 @app.route('/api/tick', methods=['POST'])
 def receive_tick():
-    """
-    接收 EA 推送的 Tick 数据 (单向推送)
-    """
     try:
         ticks = request.json
         if not isinstance(ticks, list):
             ticks = [ticks]
-            
-        receive_time = int(time.time() * 1000)
-        
-        # 这里可以将 Tick 数据存入缓存，供前端轮询
-        # 简单实现：只保存最新的 QUOTE_DATA 到 history_report 队列，模拟成 QUOTE 报告
-        # 以便前端通过 /api/latest_status 轮询到
-        
         for tick in ticks:
             symbol   = tick.get('symbol')
             bid      = tick.get('bid')
             ask      = tick.get('ask')
             tick_time = tick.get('tick_time')
-
             if not symbol or bid is None or ask is None: continue
             bf, af = _to_float(bid), _to_float(ask)
             if bf is None or af is None: continue
-
-            # 计算 ts_ms
             if tick_time is not None:
                 tft   = float(tick_time)
                 ts_ms = int(tft) if tft > 1e12 else int(tft * 1000)
             else:
                 ts_ms = int(time.time() * 1000)
-
-            # 1) 写入报价缓存（支持归一化品种名）
             cache_tick_quote(symbol, bf, af, spread=tick.get('spread'), ts=tick_time)
-
-            # 2) 更新 K 线
             update_kline(symbol, bf, af, ts_ms)
-
-            # 3) 保留兼容用的 history_report 记录
             quote_msg = json.dumps({"bid": bf, "ask": af})
             record = {
                 "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -3197,9 +2786,7 @@ def receive_tick():
             }
             with history_lock:
                 history_report.appendleft(record)
-
-        return '', 204 # No Content, 快速响应
-        
+        return '', 204
     except Exception as e:
         print(f"Error processing tick: {e}")
         return jsonify({'error': str(e)}), 500
@@ -3210,7 +2797,6 @@ def send_command():
     if is_restricted_time():
         return redirect(url_for("index"))
     
-    # 使用归一化函数处理字段
     account_raw = request.form.get("account", "")
     cmd_type_raw = request.form.get("cmd_type", "MARKET")
     symbol_raw = request.form.get("symbol", "")
@@ -3233,61 +2819,28 @@ def send_command():
     lots = norm_volume(lots_raw) if lots_raw else None
     price = norm_volume(price_raw) if price_raw else None
 
-    # 强校验与风控
     if cmd_type in ("MARKET", "LIMIT"):
         if not symbol:
-            print("[BLOCK] symbol 为空")
             return redirect(url_for("index"))
         if side_ui not in ("BUY", "SELL"):
-            print("[BLOCK] side 无效:", side_ui)
             return redirect(url_for("index"))
         if volume <= 0:
-            print("[BLOCK] volume 必须 > 0")
             return redirect(url_for("index"))
-            
-        # 风控：单笔手数限制 (示例: 最大 5 手)
         if volume > 5.0:
-            print("[RISK] 单笔手数超过限制 (Max 5.0)")
             return jsonify({"success": False, "message": "单笔手数超过限制 (Max 5.0)"}), 400
-            
-        # 风控：资金预检 (简单模拟)
-        # 假设我们从 latest_status 获取 free_margin
-        # 注意：这里可能拿到的是旧数据，严格风控应在 EA 端再次校验
-        # 这里仅作前端/网关层面的快速拦截
-        with history_lock:
-            latest_status = history_status[0] if history_status else None
-            if latest_status:
-                # 修复：从 parsed 结构中读取 free_margin
-                parsed = latest_status.get("parsed", {})
-                free_margin = parsed.get("free_margin", 0)
-                
-                # 粗略估算保证金：1手 ~ 1000 USD (假设杠杆100，合约100000)
-                # 实际应根据 symbol 和 leverage 计算，这里仅作演示
-                est_margin = volume * 1000 
-                
-                print(f"[RISK] Pre-Check: FreeMargin={free_margin}, EstReq={est_margin}, Vol={volume}")
-                
-                if free_margin < est_margin * 1.1: # 保留 10% 缓冲
-                    print(f"[RISK] 资金不足预警: Free={free_margin}, EstReq={est_margin}")
-                    # return jsonify({"success": False, "message": "资金不足 (预估)"}), 400
-                    # 暂时仅打印日志，不硬拦截，以免误杀
     elif cmd_type == "QUOTE":
-        # 放行 quote 请求，即使 volume=0
         pass
     elif cmd_type == "CLOSE":
         if not ticket:
-            print("[BLOCK] ticket 为空")
             return redirect(url_for("index"))
     else:
         return redirect(url_for("index"))
 
-    # 若没填 account，则尝试从最新 status 获取
     if not account:
         with history_lock:
             if history_status and isinstance(history_status[0].get("parsed"), dict):
                 account = norm_str(history_status[0]["parsed"].get("account"))
 
-    # 命令对象 - 关键：account 要么不传，要么传真实值，严禁传空字符串
     now = int(time.time())
     cmd = {
         "id": generate_unique_cmd_id(),
@@ -3295,8 +2848,6 @@ def send_command():
         "created_at": now,
         "ttl_sec": 10,
     }
-    
-    # 只有非空 account 才添加
     if account:
         cmd["account"] = account
 
@@ -3305,7 +2856,6 @@ def send_command():
         cmd["symbol"] = symbol
         cmd["side"] = "buy" if side_ui == "BUY" else "sell"
         cmd["volume"] = volume
-        # 兼容字段名
         cmd["lots"] = volume
         if sl is not None and sl > 0:
             cmd["sl_price"] = sl
@@ -3326,15 +2876,15 @@ def send_command():
             cmd["tp"] = tp
     elif cmd_type == "CLOSE":
         cmd["action"] = "close"
+        cmd["side"] = "close"
         cmd["ticket"] = int(ticket) if ticket else None
         if lots and lots > 0:
             cmd["lots"] = lots
+            cmd["volume"] = lots
 
     print("[ADD CMD]:", json.dumps(cmd, ensure_ascii=False))
-
     with commands_lock:
         commands.append(cmd)
-        # cmd_counter 已在 generate_unique_cmd_id 中增加
 
     return redirect(url_for("index"))
 
@@ -3352,6 +2902,8 @@ def clear_commands():
     return redirect(url_for("index"))
 
 # ==================== 启动 ====================
+# ★ FIX #2: threaded=True 解决 EA 轮询阻塞 UI 请求的卡顿问题
+#            debug=False 关闭单线程 reloader，必须与 threaded=True 同时设置
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
